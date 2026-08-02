@@ -127,10 +127,10 @@ async function runOne({
 			makeCallbacks(),
 			{ mode: settings.agentMode || 'code' },
 		);
-		ui.endAssistantStream();
 		history.push({ role: 'user', content: prompt });
 		return root;
 	} finally {
+		ui.endAssistantStream();
 		process.off('SIGINT', onSig);
 	}
 }
