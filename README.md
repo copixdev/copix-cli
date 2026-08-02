@@ -24,6 +24,18 @@ copix "explain package.json"  # one-shot
 copix -p ~/sites "add a landing page"
 ```
 
+### Slash commands
+
+| Command | Action |
+| --- | --- |
+| `/help` | Show help |
+| `/model` | Active model + installed Ollama tags |
+| `/cwd` | Print workspace |
+| `/clear` | Clear chat history |
+| `/exit` | Quit |
+
+The REPL uses a Cursor-style text UI (banner, `❯` prompt, you/copix frames, tool cards). When stretch models like `qwen2.5-coder:7b` are not installed, Copix falls back to your configured / installed model (`qwen2.5:3b`).
+
 ## How it syncs
 
 | Piece | Source |
