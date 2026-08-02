@@ -34,7 +34,16 @@ copix -p ~/sites "add a landing page"
 | `/clear` | Clear chat history |
 | `/exit` | Quit |
 
-The REPL mirrors Cursor Agent’s text UI: Question cards, `⬢` step timeline, `→` prompt, and a footer with mode / model / shortcuts. Missing Ollama models (e.g. `qwen2.5-coder:7b`) automatically fall back to `qwen2.5:3b`.
+The REPL mirrors Cursor Agent’s text UI:
+
+- **Type inside the input box** — `→` prompt in a rounded rectangle
+- **Slash menu** — type `/` for a filtered command list (↑↓ select, Tab complete, Enter run)
+- `⬢` step timeline and tool cards while the agent works
+- Missing Ollama models (e.g. `qwen2.5-coder:7b`) automatically fall back to `qwen2.5:3b`
+
+### Desktop sync
+
+CLI conversations are saved to `~/Copix/sessions.json` in the same format Copix Desktop uses. Desktop merges that file on launch and whenever its window regains focus, so agents you ran in the terminal appear in the Desktop sidebar (and Desktop history is mirrored back to the same file).
 
 ## How it syncs
 

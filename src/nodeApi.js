@@ -332,6 +332,17 @@ export function createNodeCopixApi() {
 			await fs.mkdir(COPIX_DIR, { recursive: true });
 			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
 		},
+		loadChatSessions: async () => {
+			try {
+				return await fs.readFile(path.join(COPIX_DIR, 'sessions.json'), 'utf8');
+			} catch {
+				return null;
+			}
+		},
+		saveChatSessions: async (json) => {
+			await fs.mkdir(COPIX_DIR, { recursive: true });
+			await fs.writeFile(path.join(COPIX_DIR, 'sessions.json'), json, 'utf8');
+		},
 		openExternal: async (url) => {
 			const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
 			spawn(opener, [url], { shell: true, detached: true }).unref();
