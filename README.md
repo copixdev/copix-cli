@@ -1,6 +1,6 @@
 # Copix CLI
 
-Terminal coding agent for Copix. Uses the same `~/Copix/settings.json` as the desktop apps.
+Terminal coding agent **synced with Copix Desktop** — same `runAgent` loop, system prompt, and tools (`create_project`, `edit_file`, `terminal`, `multitask`, `spawn_subagent`, …).
 
 ## Install
 
@@ -8,26 +8,32 @@ Terminal coding agent for Copix. Uses the same `~/Copix/settings.json` as the de
 curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.sh | bash
 ```
 
-Or from this repo:
+Requires Node.js 18+ and [Ollama](https://ollama.com).
 
 ```bash
-chmod +x cli/bin/copix.js cli/install.sh
-./cli/bin/copix.js --help
+ollama pull qwen2.5:3b
+export PATH="$HOME/.local/bin:$PATH"
+copix
 ```
-
-Requires Node.js 18+.
 
 ## Usage
 
 ```bash
 copix                         # interactive REPL
 copix "explain package.json"  # one-shot
-copix -p ~/code/app "add tests"
+copix -p ~/sites "add a landing page"
 ```
 
-## Settings
+## How it syncs
 
-Uses local **Ollama** by default. Edit `~/Copix/settings.json` if you want a different model:
+| Piece | Source |
+| --- | --- |
+| Agent loop | `macOS/studio/src/models/router.ts` → `runAgent` |
+| Tools | Desktop `TOOLS` / `executeTool` |
+| Settings | `~/Copix/settings.json` (same as Desktop) |
+| FS / shell | Node `CopixApi` shim (`cli/src/nodeApi.js`) |
+
+## Settings
 
 ```json
 {
@@ -36,8 +42,4 @@ Uses local **Ollama** by default. Edit `~/Copix/settings.json` if you want a dif
     "modelId": "qwen2.5:3b"
   }
 }
-```
-
-```bash
-ollama pull qwen2.5:3b
 ```

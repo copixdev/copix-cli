@@ -51,6 +51,14 @@ if [ ! -f "$INSTALL_DIR/cli/bin/copix.js" ]; then
   exit 1
 fi
 
+if [ ! -d "$INSTALL_DIR/macOS/studio/src/models" ]; then
+  echo "Install failed: desktop agent sources missing under macOS/studio."
+  exit 1
+fi
+
+echo "Installing CLI dependencies …"
+npm install --prefix "$INSTALL_DIR/cli" --omit=dev --silent
+
 ln -sfn "$INSTALL_DIR/cli/bin/copix.js" "$BIN_DIR/copix"
 chmod +x "$INSTALL_DIR/cli/bin/copix.js" "$BIN_DIR/copix"
 

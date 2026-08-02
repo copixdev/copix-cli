@@ -1,8 +1,8 @@
 {
   "name": "copix-cli",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Copix — terminal coding agent",
+  "description": "Copix CLI — same agent and tools as Copix Desktop",
   "type": "module",
   "bin": {
     "copix": "./bin/copix.js"
@@ -12,7 +12,11 @@
   },
   "scripts": {
     "start": "node ./bin/copix.js",
-    "copix": "node ./bin/copix.js"
+    "copix": "node ./bin/copix.js",
+    "postinstall": "node -e \"console.log('Copix CLI ready — shares macOS/studio agent')\""
+  },
+  "dependencies": {
+    "tsx": "^4.20.3"
   },
   "license": "MIT"
 }
