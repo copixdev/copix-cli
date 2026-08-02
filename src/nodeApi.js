@@ -148,6 +148,13 @@ function emitTerminal(streamId, chunk) {
 async function runProcess(command, cwd, streamId) {
 	const isWin = process.platform === 'win32';
 	return new Promise(resolve => {
+		let settled = false;
+		const done = (value) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(value);
+		};
 		const proc = isWin
 			? spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', command], { cwd })
 			: spawn(process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash', ['-lc', command], { cwd });
@@ -162,11 +169,11 @@ async function runProcess(command, cwd, streamId) {
 			out += s;
 			if (streamId) emitTerminal(streamId, s);
 		});
-		proc.on('error', err => resolve(err.message));
-		proc.on('close', code => resolve(out.trim() || `(exit ${code ?? 0})`));
-		setTimeout(() => {
+		proc.on('error', err => done(err.message));
+		proc.on('close', code => done(out.trim() || `(exit ${code ?? 0})`));
+		const timer = setTimeout(() => {
 			proc.kill();
-			resolve(out.trim() || '(timeout 120s)');
+			done(out.trim() || '(timeout 120s)');
 		}, 120_000);
 	});
 }
