@@ -13,6 +13,7 @@
   "scripts": {
     "start": "node ./bin/copix.js",
     "copix": "node ./bin/copix.js",
+    "smoke": "node ./scripts/smoke-tools.mjs",
     "postinstall": "node -e \"console.log('Copix CLI ready — shares macOS/studio agent')\""
   },
   "dependencies": {
