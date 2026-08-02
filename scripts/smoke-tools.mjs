@@ -18,6 +18,11 @@ const read = await api.readFile('hello.txt', project.root);
 if (!read.includes('hello from copix')) throw new Error('read_file mismatch');
 
 await api.writeFile('hello.txt', 'hello from copix\nedited\n', project.root);
+const before = await api.readFile('hello.txt', project.root);
+// edit_file parity is in desktop router; here verify overwrite + append-style write
+await api.writeFile('hello.txt', `${before}appended\n`, project.root);
+const after = await api.readFile('hello.txt', project.root);
+if (!after.includes('appended')) throw new Error('append-style write failed');
 const listing = await api.listDir('.', project.root);
 if (!listing.includes('hello.txt') || !listing.includes('README.md')) {
 	throw new Error(`list_dir unexpected: ${listing.join(',')}`);
