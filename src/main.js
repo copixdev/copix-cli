@@ -79,13 +79,17 @@ function modelLabel(settings) {
 
 function normalizeSettings(settings) {
 	const raw = settings?.model && typeof settings.model === 'object' ? settings.model : {};
+	let modelId = String(raw.modelId || FALLBACK_MODEL).replace(/^ollama\//, '') || FALLBACK_MODEL;
+	if (/llama-3|gpt-|claude|gemini|mixtral|groq/i.test(modelId) || modelId.includes('/')) {
+		modelId = FALLBACK_MODEL;
+	}
 	const model = {
 		apiKey: '',
 		selection: raw.selection === 'manual' ? 'manual' : 'auto',
 		lowVram: Boolean(raw.lowVram),
 		...raw,
 		provider: 'ollama',
-		modelId: String(raw.modelId || FALLBACK_MODEL).replace(/^ollama\//, '') || FALLBACK_MODEL,
+		modelId,
 	};
 	return {
 		...settings,

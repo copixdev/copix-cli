@@ -309,14 +309,20 @@ export function createNodeCopixApi() {
 			}
 			try {
 				const raw = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
+				const mergedModel = {
+					...DEFAULT_SETTINGS.model,
+					...(raw.model || {}),
+					provider: 'ollama',
+				};
+				// Drop leftover cloud model ids (e.g. Groq) so CLI/Desktop stay on Ollama.
+				const id = String(mergedModel.modelId || '');
+				if (!id || /llama-3|gpt-|claude|gemini|mixtral|groq/i.test(id) || id.includes('/')) {
+					mergedModel.modelId = DEFAULT_SETTINGS.model.modelId;
+				}
 				return {
 					...DEFAULT_SETTINGS,
 					...raw,
-					model: {
-						...DEFAULT_SETTINGS.model,
-						...(raw.model || {}),
-						provider: 'ollama',
-					},
+					model: mergedModel,
 				};
 			} catch {
 				return structuredClone(DEFAULT_SETTINGS);
