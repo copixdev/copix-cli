@@ -3,6 +3,7 @@
  * History syncs with Copix Desktop via ~/Copix/sessions.json.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installNodeCopixApi } from './nodeApi.js';
@@ -282,24 +283,68 @@ function footerLines({ model, workspace, filesEdited }) {
 	];
 }
 
+function expandUserPath(raw) {
+	let p = String(raw || '').trim();
+	if (!p) return '';
+	if (p === '~') return os.homedir();
+	if (p.startsWith('~/')) p = path.join(os.homedir(), p.slice(2));
+	return path.resolve(p);
+}
+
+function timeAgo(ts) {
+	const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+	if (s < 60) return `${s}s ago`;
+	if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+	if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+	return `${Math.floor(s / 86400)}d ago`;
+}
+
+function ok(msg) {
+	console.log(`\n${ui.color.green}⬢${ui.color.reset} ${msg}\n`);
+}
+
+function info(msg) {
+	console.log(`\n${ui.color.muted}${msg}${ui.color.reset}\n`);
+}
+
+function warn(msg) {
+	console.log(`\n${ui.color.yellow}⬢ ${msg}${ui.color.reset}\n`);
+}
+
 async function repl(deps) {
 	const { api, runAgent, resolveModelConfig } = deps;
 	let workspaceRoot = deps.workspaceRoot;
-	const settings = normalizeSettings(await api.getSettings());
-	const status = await api.getServerStatus();
-	const history = [];
+	let rawSettings = await api.getSettings();
+	let settings = normalizeSettings(rawSettings);
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+	let history = [];
 	let lastModel = settings.model.modelId;
 	let filesEdited = 0;
 	let session = newCliSession(workspaceRoot);
 
-	ui.printBanner({
-		version: pkg.version,
-		model: modelLabel(settings),
-		workspace: workspaceRoot,
-		ollamaOk: Boolean(status?.online),
-		installedCount: Array.isArray(status?.models) ? status.models.length : 0,
-	});
+	async function persistSettings() {
+		rawSettings = { ...rawSettings, model: { ...rawSettings.model, ...settings.model } };
+		await api.setSettings(rawSettings);
+	}
+
+	async function printBannerNow() {
+		const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
+		ui.printBanner({
+			version: pkg.version,
+			model: `${settings.model.selection === 'auto' ? 'auto · ' : ''}${modelLabel(settings)}`,
+			workspace: workspaceRoot,
+			ollamaOk: Boolean(status?.online),
+			installedCount: Array.isArray(status?.models) ? status.models.length : 0,
+		});
+	}
+
+	function resetConversation() {
+		history = [];
+		filesEdited = 0;
+		session = newCliSession(workspaceRoot);
+	}
+
+	await printBannerNow();
 
 	while (true) {
 		const line = await readPrompt({
@@ -308,28 +353,128 @@ async function repl(deps) {
 		if (line === null) break;
 		if (!line) continue;
 
-		if (line === '/exit' || line === '/quit' || line === 'exit') break;
-		if (line === '/help' || line === '/?') {
+		const [cmd, ...rest] = line.split(/\s+/);
+		const arg = rest.join(' ').trim();
+
+		if (cmd === '/exit' || cmd === '/quit' || line === 'exit') break;
+
+		if (cmd === '/help' || cmd === '/?') {
 			console.log(ui.helpText());
 			continue;
 		}
-		if (line === '/cwd') {
-			console.log(`\n${ui.color.muted}workspace · ${workspaceRoot}${ui.color.reset}\n`);
+
+		if (cmd === '/cwd' || cmd === '/workspace') {
+			if (!arg) {
+				info(`workspace · ${workspaceRoot}\nChange it with /cwd <path> (e.g. /cwd ~/sites)`);
+				continue;
+			}
+			const next = expandUserPath(arg);
+			if (!fs.existsSync(next) || !fs.statSync(next).isDirectory()) {
+				warn(`Not a directory: ${next}`);
+				continue;
+			}
+			workspaceRoot = next;
+			session.workspaceRoot = next;
+			rawSettings = { ...rawSettings, workspace: { ...(rawSettings.workspace || {}), homeDirectory: next } };
+			await api.setSettings(rawSettings);
+			ok(`Workspace → ${next} ${ui.color.muted}(saved as default in settings.json)${ui.color.reset}`);
 			continue;
 		}
-		if (line === '/clear') {
-			history.length = 0;
-			filesEdited = 0;
-			session = newCliSession(workspaceRoot);
-			console.log(`\n${ui.color.muted}Conversation cleared.${ui.color.reset}\n`);
+
+		if (cmd === '/model') {
+			if (!arg) {
+				console.log(ui.modelListText(modelLabel(settings), await installedTags(api)));
+				info('Switch with /model <tag> · back to routing with /model auto');
+				continue;
+			}
+			if (arg === 'auto') {
+				settings.model.selection = 'auto';
+				await persistSettings();
+				ok(`Model selection → auto ${ui.color.muted}(routes by task, prefers installed tags)${ui.color.reset}`);
+				continue;
+			}
+			const tag = arg.replace(/^ollama\//, '');
+			const installed = await installedTags(api);
+			settings.model.selection = 'manual';
+			settings.model.modelId = tag;
+			await persistSettings();
+			lastModel = tag;
+			if (installed.length && !installed.some((m) => m === tag || m.startsWith(`${tag.split(':')[0]}:`))) {
+				warn(`Model set to ${tag}, but it is not installed — run /pull ${tag}`);
+			} else {
+				ok(`Model → ${tag} ${ui.color.muted}(manual, saved to settings.json)${ui.color.reset}`);
+			}
 			continue;
 		}
-		if (line === '/model' || line === '/models') {
+
+		if (cmd === '/models') {
 			console.log(ui.modelListText(modelLabel(settings), await installedTags(api)));
 			continue;
 		}
+
+		if (cmd === '/pull') {
+			if (!arg) {
+				warn('Usage: /pull <tag> (e.g. /pull qwen2.5:3b)');
+				continue;
+			}
+			info(`Pulling ${arg} — this can take a while…`);
+			const res = await api.pullOllamaModel(arg).catch((e) => ({ ok: false, message: String(e?.message || e) }));
+			if (res.ok) ok(`Pulled ${arg}`);
+			else warn(`Pull failed: ${res.message}`);
+			continue;
+		}
+
+		if (cmd === '/status') {
+			const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
+			const models = Array.isArray(status?.models) ? status.models : [];
+			info([
+				`copix      ${pkg.version}`,
+				`ollama     ${status?.online ? 'online' : 'offline'}`,
+				`model      ${settings.model.selection === 'auto' ? 'auto · ' : ''}${modelLabel(settings)}`,
+				`installed  ${models.length ? models.join(', ') : '(none)'}`,
+				`workspace  ${workspaceRoot}`,
+				`history    ${history.length / 2 | 0} turn${history.length === 2 ? '' : 's'} this session`,
+				`settings   ~/Copix/settings.json · sessions ~/Copix/sessions.json`,
+			].join('\n'));
+			continue;
+		}
+
+		if (cmd === '/history') {
+			const raw = await api.loadChatSessions().catch(() => null);
+			let all = [];
+			try { all = raw ? JSON.parse(raw) : []; } catch { all = []; }
+			if (!all.length) {
+				info('No saved sessions yet.');
+				continue;
+			}
+			const rows = all
+				.filter((s) => s && Array.isArray(s.messages))
+				.sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
+				.slice(0, 8)
+				.map((s) => {
+					const origin = s.origin === 'cli' ? 'cli' : 'desktop';
+					const turns = Math.floor(s.messages.length / 2);
+					return `${ui.color.accent}⬢${ui.color.reset} ${s.title || '(untitled)'}  ${ui.color.muted}· ${origin} · ${turns} turn${turns === 1 ? '' : 's'} · ${timeAgo(s.updatedAt ?? s.createdAt ?? Date.now())}${ui.color.reset}`;
+				});
+			console.log(`\n${rows.join('\n')}\n${ui.color.muted}Synced with Copix Desktop via ~/Copix/sessions.json${ui.color.reset}\n`);
+			continue;
+		}
+
+		if (cmd === '/new') {
+			resetConversation();
+			ok('Started a fresh conversation.');
+			continue;
+		}
+
+		if (cmd === '/clear') {
+			resetConversation();
+			process.stdout.write('\x1b[2J\x1b[3J\x1b[H'); // wipe screen + scrollback
+			await printBannerNow();
+			continue;
+		}
+
 		if (line.startsWith('/')) {
-			console.log(`\n${ui.color.yellow}Unknown command: ${line}${ui.color.reset} ${ui.color.muted}— try /help${ui.color.reset}\n`);
+			warn(`Unknown command: ${cmd} — try /help`);
 			continue;
 		}
 

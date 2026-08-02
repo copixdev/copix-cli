@@ -28,10 +28,15 @@ copix -p ~/sites "add a landing page"
 
 | Command | Action |
 | --- | --- |
+| `/model [tag\|auto]` | Show models, or switch — `/model qwen2.5:3b` pins a tag, `/model auto` restores task routing (saved to `settings.json`) |
+| `/models` | List installed Ollama tags |
+| `/pull <tag>` | Download a model (`ollama pull`) |
+| `/cwd [path]` | Show or change the workspace (saved as the default) |
+| `/status` | Ollama status, model, workspace, session info |
+| `/history` | Recent agent sessions (synced with Desktop) |
+| `/new` | Fresh conversation, keep the screen |
+| `/clear` | Wipe screen + scrollback and start fresh |
 | `/help` | Show help |
-| `/model` | Active model + installed Ollama tags |
-| `/cwd` | Print workspace |
-| `/clear` | Clear chat history |
 | `/exit` | Quit |
 
 The REPL mirrors Cursor Agent’s text UI:

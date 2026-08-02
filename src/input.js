@@ -41,15 +41,21 @@ function padToWidth(s, width) {
 }
 
 export const SLASH_COMMANDS = [
+	{ cmd: '/model', args: '[tag|auto]', desc: 'Show models, or switch (e.g. /model qwen2.5:3b)' },
+	{ cmd: '/models', args: '', desc: 'List installed Ollama models' },
+	{ cmd: '/pull', args: '<tag>', desc: 'Download an Ollama model (ollama pull)' },
+	{ cmd: '/cwd', args: '[path]', desc: 'Show or change the workspace directory' },
+	{ cmd: '/status', args: '', desc: 'Ollama status, model, workspace, version' },
+	{ cmd: '/history', args: '', desc: 'Recent agent sessions (synced with Desktop)' },
+	{ cmd: '/new', args: '', desc: 'Start a fresh conversation' },
+	{ cmd: '/clear', args: '', desc: 'Clear the screen and start fresh' },
 	{ cmd: '/help', args: '', desc: 'Show usage, tools, and settings' },
-	{ cmd: '/model', args: '', desc: 'Active model + installed Ollama tags' },
-	{ cmd: '/cwd', args: '', desc: 'Print the current workspace' },
-	{ cmd: '/clear', args: '', desc: 'Clear this conversation' },
 	{ cmd: '/exit', args: '', desc: 'Quit Copix' },
 ];
 
 function filteredCommands(buffer) {
 	if (!buffer.startsWith('/')) return [];
+	if (/\s/.test(buffer)) return []; // typing arguments — menu out of the way
 	const q = buffer.slice(1).toLowerCase();
 	return SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(q));
 }
@@ -112,8 +118,9 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 					const m = menu[i];
 					const sel = i === menuIndex;
 					const mark = sel ? `${color.accent}→${color.reset}` : ' ';
-					const cmd = sel ? `${color.bold}${m.cmd}${color.reset}` : m.cmd;
-					lines.push(`${mark} ${padToWidth(cmd, 14)} ${color.muted}${m.desc}${color.reset}`);
+					const label = `${m.cmd}${m.args ? ` ${m.args}` : ''}`;
+					const cmd = sel ? `${color.bold}${label}${color.reset}` : label;
+					lines.push(`${mark} ${padToWidth(cmd, 22)} ${color.muted}${m.desc}${color.reset}`);
 				}
 			} else if (!final) {
 				for (const f of footer) lines.push(f);
