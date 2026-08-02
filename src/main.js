@@ -57,7 +57,12 @@ function makeCallbacks(state) {
 		},
 		onToolEnd: (_id, tool, _args, meta) => {
 			const ok = meta?.ok !== false && !meta?.error;
-			ui.writeToolResult(tool, ok, meta?.result ?? meta?.error ?? '');
+			const preview = String(meta?.result ?? meta?.error ?? '');
+			// Keep web tool previews short in the timeline
+			const clip = /web_search|web_fetch/.test(tool)
+				? preview.split('\n').slice(0, 6).join('\n')
+				: preview;
+			ui.writeToolResult(tool, ok, clip);
 		},
 		onStatus: (msg) => {
 			ui.writeStatus(msg);

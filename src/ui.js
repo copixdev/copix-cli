@@ -149,7 +149,7 @@ export function writeToolCall(name, args = {}) {
 		streaming = false;
 	}
 	if (stepOpen) process.stdout.write('\n');
-	const preview = args.path || args.command || args.pattern || args.name || args.summary || '';
+	const preview = args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '';
 	const detail = preview
 		? `${color.muted} ${DOT} ${truncate(String(preview), cols() - 20)}${color.reset}`
 		: '';
@@ -242,10 +242,12 @@ export function helpText() {
 			'/exit               quit',
 			'',
 			'Tools: create_project edit_file terminal',
-			'       read_file list_dir grep multitask',
+			'       web_search web_fetch read_file list_dir',
+			'       grep multitask spawn_subagent',
 			'',
 			'Settings: ~/Copix/settings.json',
 			'History:  ~/Copix/sessions.json (shared with Desktop)',
+			'License:  proprietary — free to use, not open source',
 		], { label: 'Help' }),
 		'',
 	].join('\n');

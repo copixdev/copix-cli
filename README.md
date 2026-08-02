@@ -1,6 +1,8 @@
 # Copix CLI
 
-Terminal coding agent **synced with Copix Desktop** — same `runAgent` loop, system prompt, and tools (`create_project`, `edit_file`, `terminal`, `multitask`, `spawn_subagent`, …).
+Terminal coding agent **synced with Copix Desktop** — same `runAgent` loop, system prompt, and tools (`create_project`, `edit_file`, `terminal`, `web_search`, `web_fetch`, `multitask`, `spawn_subagent`, …).
+
+Copix is **free to use** and **not open source** — see [LICENSE.txt](../LICENSE.txt).
 
 ## Install
 
