@@ -59,10 +59,10 @@ if [ ! -f "$HOME/Copix/settings.json" ]; then
   cat > "$HOME/Copix/settings.json" <<'JSON'
 {
   "model": {
-    "provider": "groq",
+    "provider": "ollama",
     "apiKey": "",
     "selection": "auto",
-    "modelId": "llama-3.3-70b-versatile",
+    "modelId": "qwen2.5:3b",
     "lowVram": false
   },
   "workspace": { "homeDirectory": "" },
@@ -82,6 +82,7 @@ if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
   echo "Or invoke directly:  $BIN_DIR/copix"
 fi
 echo
-echo "Configure a provider key in ~/Copix/settings.json, then run:"
+echo "Start Ollama, then run:"
+echo "  ollama pull qwen2.5:3b"
 echo "  copix"
 echo "  copix \"summarize this repo\""

@@ -16,9 +16,8 @@ Usage:
   copix --help              Show help
 
 Settings: ~/Copix/settings.json
-  model.provider   groq | openrouter | openai | ollama
-  model.apiKey     API key for cloud providers
-  model.modelId    Model id (optional)
+  model.provider   ollama (local)
+  model.modelId    Ollama model tag (default qwen2.5:3b)
 
 Install:
   curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.sh | bash

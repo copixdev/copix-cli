@@ -27,16 +27,17 @@ copix -p ~/code/app "add tests"
 
 ## Settings
 
-Edit `~/Copix/settings.json`:
+Uses local **Ollama** by default. Edit `~/Copix/settings.json` if you want a different model:
 
 ```json
 {
   "model": {
-    "provider": "groq",
-    "apiKey": "gsk_…",
-    "modelId": "llama-3.3-70b-versatile"
+    "provider": "ollama",
+    "modelId": "qwen2.5:3b"
   }
 }
 ```
 
-Providers: `groq`, `openrouter`, `openai`, `ollama`.
+```bash
+ollama pull qwen2.5:3b
+```
