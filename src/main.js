@@ -1,5 +1,5 @@
 /**
- * Copix CLI — same agent loop and tools as Copix Desktop (macOS/studio runAgent).
+ * Copix CLI — Cursor Agent–style REPL, same runAgent as Desktop.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import * as ui from './ui.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STUDIO_SRC = path.resolve(__dirname, '../../macOS/studio/src');
+const FALLBACK_MODEL = 'qwen2.5:3b';
 
 function parseArgs(argv) {
 	const opts = { workspace: process.cwd(), prompt: '', help: false, version: false };
@@ -35,25 +36,27 @@ async function loadDesktopModules() {
 	return { api, runAgent, resolveModelConfig };
 }
 
-function makeCallbacks() {
+function makeCallbacks(state) {
 	let thinking = false;
 	return {
 		onText: (chunk) => {
-			if (thinking) {
-				thinking = false;
-			}
+			thinking = false;
 			ui.writeAssistantDelta(chunk);
 		},
 		onThinkingStart: () => {
 			thinking = true;
 		},
 		onThinkingChunk: (chunk) => {
-			ui.writeStatus(chunk);
+			const text = String(chunk || '').trim();
+			if (text) ui.writeStatus(text.replace(/^\(+|\)+$/g, ''));
 		},
 		onThinkingEnd: () => {
 			thinking = false;
 		},
 		onToolStart: (_id, tool, args) => {
+			if (/write_file|edit_file|append_file|create_project|delete_file/.test(tool)) {
+				state.filesEdited += 1;
+			}
 			ui.writeToolCall(tool, args || {});
 		},
 		onToolEnd: (_id, tool, _args, meta) => {
@@ -69,9 +72,43 @@ function makeCallbacks() {
 }
 
 function modelLabel(settings) {
-	const id = settings?.model?.modelId || 'qwen2.5:3b';
+	const id = settings?.model?.modelId || FALLBACK_MODEL;
 	const provider = settings?.model?.provider || 'ollama';
 	return `${provider}/${id}`;
+}
+
+function normalizeSettings(settings) {
+	const raw = settings?.model && typeof settings.model === 'object' ? settings.model : {};
+	const model = {
+		apiKey: '',
+		selection: raw.selection === 'manual' ? 'manual' : 'auto',
+		lowVram: Boolean(raw.lowVram),
+		...raw,
+		provider: 'ollama',
+		modelId: String(raw.modelId || FALLBACK_MODEL).replace(/^ollama\//, '') || FALLBACK_MODEL,
+	};
+	return {
+		...settings,
+		agentMode: settings?.agentMode || 'code',
+		model,
+	};
+}
+
+async function installedTags(api) {
+	try {
+		const status = await api.getServerStatus();
+		return Array.isArray(status?.models) ? status.models.map(String) : [];
+	} catch {
+		return [];
+	}
+}
+
+function pickInstalledFallback(installed) {
+	if (!installed.length) return FALLBACK_MODEL;
+	const exact = installed.find((m) => m === FALLBACK_MODEL || m.startsWith(`${FALLBACK_MODEL}`));
+	if (exact) return FALLBACK_MODEL;
+	const qwen = installed.find((m) => m.startsWith('qwen2.5:') || m.startsWith('qwen2.5-'));
+	return qwen?.split(':').length ? qwen : installed[0];
 }
 
 async function runOne({
@@ -84,12 +121,23 @@ async function runOne({
 	settings,
 	installedModels,
 }) {
-	const config = resolveModelConfig(
+	const state = { filesEdited: 0 };
+	let config = resolveModelConfig(
 		settings.model,
 		settings.agentMode || 'code',
 		installedModels,
 		prompt,
 	);
+
+	// Hard safety: never call a model that is clearly not installed.
+	if (
+		installedModels.length > 0
+		&& !installedModels.some((m) => m === config.model || m.startsWith(`${config.model}`) || m.startsWith(`${config.model.split(':')[0]}:`))
+	) {
+		config = { ...config, model: pickInstalledFallback(installedModels) };
+	}
+
+	ui.writeStep('Analyzed request');
 	ui.writeModelLine(config.model, config.provider === 'ollama' ? 'local' : config.provider);
 
 	const sessionId = `cli-${Date.now()}`;
@@ -108,7 +156,7 @@ async function runOne({
 				workspaceRoot: root,
 				onWorkspaceChange: (next) => { root = next; },
 				onSpawnSubagent: async (childPrompt, label) => {
-					ui.writeStatus(`subagent ${label || ''}…`);
+					ui.writeToolCall('subagent', { name: label || 'child' });
 					const childId = `cli-sub-${Date.now()}`;
 					await runAgent(
 						childPrompt,
@@ -116,7 +164,7 @@ async function runOne({
 						{ sessionId: childId, workspaceRoot: root, isSubagent: true },
 						[],
 						ac.signal,
-						makeCallbacks(),
+						makeCallbacks(state),
 						{ mode: settings.agentMode || 'code' },
 					);
 					return { sessionId: childId };
@@ -124,33 +172,49 @@ async function runOne({
 			},
 			history,
 			ac.signal,
-			makeCallbacks(),
+			makeCallbacks(state),
 			{ mode: settings.agentMode || 'code' },
 		);
 		history.push({ role: 'user', content: prompt });
-		return root;
+		return { workspaceRoot: root, filesEdited: state.filesEdited, model: config.model };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		const missing = /404|not found|model_not_found/i.test(message);
+		if (missing && config.model !== FALLBACK_MODEL) {
+			ui.writeStep('Retrying', FALLBACK_MODEL);
+			const retryConfig = { ...config, model: FALLBACK_MODEL };
+			await runAgent(
+				prompt,
+				retryConfig,
+				{
+					sessionId: `cli-retry-${Date.now()}`,
+					workspaceRoot: root,
+					onWorkspaceChange: (next) => { root = next; },
+				},
+				history,
+				ac.signal,
+				makeCallbacks(state),
+				{ mode: settings.agentMode || 'code' },
+			);
+			history.push({ role: 'user', content: prompt });
+			return { workspaceRoot: root, filesEdited: state.filesEdited, model: retryConfig.model };
+		}
+		throw err;
 	} finally {
 		ui.endAssistantStream();
 		process.off('SIGINT', onSig);
 	}
 }
 
-async function installedTags(api) {
-	try {
-		const status = await api.getServerStatus();
-		return Array.isArray(status?.models) ? status.models : [];
-	} catch {
-		return [];
-	}
-}
-
 async function repl(deps) {
 	const { api, runAgent, resolveModelConfig } = deps;
 	let workspaceRoot = deps.workspaceRoot;
-	const settings = await api.getSettings();
+	const settings = normalizeSettings(await api.getSettings());
 	const status = await api.getServerStatus();
 	const history = [];
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+	let lastModel = settings.model.modelId;
+	let filesEdited = 0;
 
 	ui.printBanner({
 		version: pkg.version,
@@ -159,11 +223,17 @@ async function repl(deps) {
 		ollamaOk: Boolean(status?.online),
 		installedCount: Array.isArray(status?.models) ? status.models.length : 0,
 	});
-	console.log(`${ui.color.dim}Type a message, or /help for commands.${ui.color.reset}\n`);
 
 	const rl = readline.createInterface({ input, output, terminal: true });
 	try {
 		while (true) {
+			ui.printFooter({
+				model: `ollama/${lastModel}`,
+				mode: 'Agent',
+				filesEdited,
+			});
+			ui.printPromptHints();
+
 			let line;
 			try {
 				line = (await rl.question(ui.promptLabel())).trim();
@@ -177,12 +247,14 @@ async function repl(deps) {
 				continue;
 			}
 			if (line === '/cwd') {
-				console.log(`${ui.color.cyan}workspace${ui.color.reset}  ${workspaceRoot}\n`);
+				console.log(boxLine(`workspace ${DOT} ${workspaceRoot}`));
 				continue;
 			}
 			if (line === '/clear') {
 				history.length = 0;
-				console.log(`${ui.color.dim}Conversation cleared.${ui.color.reset}\n`);
+				filesEdited = 0;
+				ui.writeStep('Conversation cleared');
+				console.log('');
 				continue;
 			}
 			if (line === '/model' || line === '/models') {
@@ -190,14 +262,13 @@ async function repl(deps) {
 				continue;
 			}
 			if (line.startsWith('/')) {
-				console.log(`${ui.color.yellow}Unknown command: ${line}${ui.color.reset}`);
-				console.log(`${ui.color.dim}Try /help${ui.color.reset}\n`);
+				ui.writeError(`Unknown command: ${line}\nTry /help`);
 				continue;
 			}
 
 			ui.beginUser(line);
 			try {
-				workspaceRoot = await runOne({
+				const turn = await runOne({
 					prompt: line,
 					workspaceRoot,
 					history,
@@ -207,6 +278,9 @@ async function repl(deps) {
 					settings,
 					installedModels: await installedTags(api),
 				});
+				workspaceRoot = turn.workspaceRoot;
+				lastModel = turn.model;
+				filesEdited += turn.filesEdited;
 			} catch (err) {
 				ui.writeError(err instanceof Error ? err.message : String(err));
 			}
@@ -216,6 +290,12 @@ async function repl(deps) {
 		rl.close();
 	}
 }
+
+function boxLine(text) {
+	return `\n${ui.color.muted}${text}${ui.color.reset}\n`;
+}
+
+const DOT = '·';
 
 export async function main(argv) {
 	const opts = parseArgs(argv);
@@ -237,9 +317,9 @@ export async function main(argv) {
 
 	const deps = await loadDesktopModules();
 	const workspaceRoot = fs.existsSync(opts.workspace) ? path.resolve(opts.workspace) : process.cwd();
-	const settings = await deps.api.getSettings();
+	const settings = normalizeSettings(await deps.api.getSettings());
 	const status = await deps.api.getServerStatus();
-	const installedModels = Array.isArray(status?.models) ? status.models : [];
+	const installedModels = Array.isArray(status?.models) ? status.models.map(String) : [];
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 	if (opts.prompt) {
@@ -251,7 +331,7 @@ export async function main(argv) {
 			installedCount: installedModels.length,
 		});
 		ui.beginUser(opts.prompt);
-		await runOne({
+		const turn = await runOne({
 			prompt: opts.prompt,
 			workspaceRoot,
 			history: [],
@@ -260,6 +340,11 @@ export async function main(argv) {
 			api: deps.api,
 			settings,
 			installedModels,
+		});
+		ui.printFooter({
+			model: `ollama/${turn.model}`,
+			mode: 'Agent',
+			filesEdited: turn.filesEdited,
 		});
 		return;
 	}

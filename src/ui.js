@@ -1,5 +1,6 @@
 /**
- * Cursor-style text UI for Copix CLI.
+ * Cursor Agent–style text UI for Copix CLI.
+ * Question card · hexagon timeline · → prompt · footer meta.
  */
 
 const ESC = '\x1b[';
@@ -16,10 +17,20 @@ export const color = {
 	magenta: `${ESC}35m`,
 	cyan: `${ESC}36m`,
 	gray: `${ESC}90m`,
+	fg: `${ESC}38;2;28;28;30m`,
+	muted: `${ESC}38;2;120;120;128m`,
+	accent: `${ESC}38;2;124;92;255m`,
+	cardBg: `${ESC}48;2;244;244;245m`,
+	cardFg: `${ESC}38;2;28;28;30m`,
 };
 
+const HEX = '⬢';
+const DOT = '·';
+const ARROW = '→';
+const MODE = '◉';
+
 function cols() {
-	return Math.max(56, Math.min(process.stdout.columns || 80, 96));
+	return Math.max(52, Math.min(process.stdout.columns || 80, 88));
 }
 
 function stripAnsi(s) {
@@ -38,7 +49,9 @@ function truncate(s, width) {
 }
 
 function wrapText(text, width) {
-	const words = String(text).split(/\s+/);
+	const raw = String(text ?? '');
+	if (!raw.trim()) return [''];
+	const words = raw.split(/\s+/);
 	const lines = [];
 	let cur = '';
 	for (const w of words) {
@@ -54,64 +67,80 @@ function wrapText(text, width) {
 		}
 	}
 	if (cur) lines.push(cur);
-	return lines.length ? lines : [''];
+	return lines;
 }
 
-export function hr(char = '─') {
-	return `${color.dim}${char.repeat(cols())}${color.reset}`;
+function box(lines, { label } = {}) {
+	const width = cols();
+	const inner = width - 4;
+	const top = `${color.dim}╭${'─'.repeat(width - 2)}╮${color.reset}`;
+	const bot = `${color.dim}╰${'─'.repeat(width - 2)}╯${color.reset}`;
+	const out = [top];
+	if (label) {
+		out.push(`${color.dim}│${color.reset} ${pad(`${color.muted}${label}${color.reset}`, inner)} ${color.dim}│${color.reset}`);
+	}
+	for (const line of lines) {
+		for (const wrapped of wrapText(line, inner)) {
+			out.push(`${color.dim}│${color.reset} ${pad(wrapped, inner)} ${color.dim}│${color.reset}`);
+		}
+	}
+	out.push(bot);
+	return out.join('\n');
 }
 
 export function printBanner({ version, model, workspace, ollamaOk, installedCount = 0 }) {
-	const width = cols();
-	const inner = width - 4;
-	const line = (text) => `${color.dim}│${color.reset} ${pad(truncate(text, inner), inner)} ${color.dim}│${color.reset}`;
-	const top = `${color.dim}┌${'─'.repeat(width - 2)}┐${color.reset}`;
-	const mid = `${color.dim}├${'─'.repeat(width - 2)}┤${color.reset}`;
-	const bot = `${color.dim}└${'─'.repeat(width - 2)}┘${color.reset}`;
 	const status = ollamaOk
-		? `${color.green}● ollama ready${color.reset}${installedCount ? `${color.dim} · ${installedCount} model${installedCount === 1 ? '' : 's'}${color.reset}` : ''}`
-		: `${color.yellow}● ollama offline${color.reset}${color.dim} — ollama pull qwen2.5:3b${color.reset}`;
+		? `${color.green}${HEX}${color.reset} ollama ready${installedCount ? `${color.muted} ${DOT} ${installedCount} model${installedCount === 1 ? '' : 's'}${color.reset}` : ''}`
+		: `${color.yellow}${HEX}${color.reset} ollama offline${color.muted} ${DOT} run ollama pull qwen2.5:3b${color.reset}`;
 
 	console.log('');
-	console.log(top);
-	console.log(line(`${color.bold}Copix${color.reset}${color.dim}  cli ${version}${color.reset}`));
-	console.log(mid);
-	console.log(line(`${color.dim}model${color.reset}      ${model}`));
-	console.log(line(`${color.dim}workspace${color.reset}  ${workspace}`));
-	console.log(line(`${color.dim}tools${color.reset}      create_project · edit_file · terminal · …`));
-	console.log(line(status));
-	console.log(bot);
-	console.log(`${color.dim}  /help  /model  /cwd  /clear  /exit${color.reset}`);
+	console.log(`${color.bold}Copix${color.reset}${color.muted}  agent cli ${version}${color.reset}`);
+	console.log(`${color.muted}${MODE}${color.reset} ${model}${color.muted}  ${DOT}  ${truncate(workspace, cols() - 24)}${color.reset}`);
+	console.log(status);
 	console.log('');
 }
 
 export function promptLabel() {
-	return `${color.cyan}${color.bold}❯${color.reset} `;
+	return `${color.accent}${ARROW}${color.reset} `;
+}
+
+export function printPromptHints() {
+	console.log(box([`${color.muted}Ask, plan, build anything${color.reset}`]));
+}
+
+export function printFooter({ model, mode = 'Agent', filesEdited = 0 }) {
+	const files = filesEdited > 0 ? `${color.muted} ${DOT} ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited${color.reset}` : '';
+	console.log(`${color.accent}${MODE}${color.reset} ${mode}${color.muted}  ${DOT}  ${model}${files}${color.reset}`);
+	console.log(`${color.muted}/ commands  ${DOT}  /model  ${DOT}  /cwd  ${DOT}  /clear  ${DOT}  /exit${color.reset}`);
+	console.log('');
 }
 
 export function beginUser(text) {
-	const width = cols() - 4;
-	console.log(`${color.dim}╭─ you${color.reset}`);
-	for (const l of wrapText(text, width)) {
-		console.log(`${color.dim}│${color.reset} ${l}`);
-	}
-	console.log(`${color.dim}╰${color.reset}`);
+	console.log('');
+	console.log(box([text], { label: 'Question' }));
+	console.log('');
 }
 
 let streaming = false;
+let stepOpen = false;
 
 export function beginAssistant() {
 	streaming = false;
+	stepOpen = false;
 }
 
 export function writeModelLine(modelId, reason) {
-	const tip = reason ? `${color.dim}  ${reason}${color.reset}` : '';
-	console.log(`${color.dim}· using ${color.reset}${color.cyan}${modelId}${color.reset}${tip}`);
+	const tip = reason ? `${color.muted} ${DOT} ${reason}${color.reset}` : '';
+	console.log(`${color.fg}${HEX}${color.reset} Model ${color.bold}${modelId}${color.reset}${tip}`);
+	stepOpen = true;
 }
 
 export function writeStatus(message) {
 	if (!message) return;
-	process.stdout.write(`\r${color.dim}  … ${truncate(message, cols() - 6)}${color.reset}${ESC}K`);
+	const clean = String(message).replace(/\s+/g, ' ').trim();
+	if (!clean) return;
+	process.stdout.write(`\r${color.muted}${HEX} ${truncate(clean, cols() - 4)}${color.reset}${ESC}K`);
+	stepOpen = true;
 }
 
 export function writeToolCall(name, args = {}) {
@@ -119,40 +148,46 @@ export function writeToolCall(name, args = {}) {
 		process.stdout.write('\n');
 		streaming = false;
 	}
+	if (stepOpen) process.stdout.write('\n');
 	const preview = args.path || args.command || args.pattern || args.name || args.summary || '';
-	const detail = preview ? ` ${color.dim}${truncate(String(preview), cols() - 24)}${color.reset}` : '';
-	console.log(`\n${color.cyan}  ⚙ ${name}${color.reset}${detail}`);
+	const detail = preview
+		? `${color.muted} ${DOT} ${truncate(String(preview), cols() - 20)}${color.reset}`
+		: '';
+	console.log(`${color.fg}${HEX}${color.reset} ${name}${detail}`);
+	stepOpen = true;
 }
 
 export function writeToolResult(_name, ok, preview) {
 	const mark = ok === false ? `${color.red}✗${color.reset}` : `${color.green}✓${color.reset}`;
-	const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 6);
+	const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 5);
 	if (!lines.length) {
-		console.log(`${color.dim}    ${mark}${color.reset}`);
+		console.log(`${color.muted}  ${HEX}${color.reset} ${mark}`);
 		return;
 	}
-	console.log(`${color.dim}    ${mark} ${truncate(lines[0], cols() - 8)}${color.reset}`);
+	console.log(`${color.accent}  ${HEX}${color.reset} ${mark} ${color.muted}${truncate(lines[0], cols() - 10)}${color.reset}`);
 	for (const l of lines.slice(1)) {
-		console.log(`${color.dim}      ${truncate(l, cols() - 8)}${color.reset}`);
+		console.log(`${color.muted}    ${truncate(l, cols() - 6)}${color.reset}`);
 	}
 }
 
 export function writeAssistantDelta(delta) {
 	if (!streaming) {
-		process.stdout.write(`\n${color.green}╭─ copix${color.reset}\n${color.green}│${color.reset} `);
+		if (stepOpen) process.stdout.write('\n');
+		process.stdout.write('\n');
 		streaming = true;
+		stepOpen = false;
 	}
-	const text = String(delta ?? '');
-	process.stdout.write(text.replace(/\n/g, `\n${color.green}│${color.reset} `));
+	process.stdout.write(String(delta ?? ''));
 }
 
 export function endAssistantStream() {
 	if (streaming) {
-		process.stdout.write(`\n${color.green}╰${color.reset}\n`);
+		process.stdout.write('\n');
 		streaming = false;
-	} else {
+	} else if (stepOpen) {
 		process.stdout.write('\n');
 	}
+	stepOpen = false;
 }
 
 export function writeError(message) {
@@ -160,61 +195,50 @@ export function writeError(message) {
 		process.stdout.write('\n');
 		streaming = false;
 	}
-	const width = cols() - 4;
-	console.log(`${color.red}╭─ error${color.reset}`);
-	for (const l of wrapText(message, width)) {
-		console.log(`${color.red}│${color.reset} ${l}`);
-	}
-	console.log(`${color.red}╰${color.reset}`);
 	console.log('');
+	console.log(box(wrapText(message, cols() - 4), { label: 'Error' }));
+	console.log('');
+	stepOpen = false;
+}
+
+export function writeStep(label, detail = '') {
+	const tip = detail ? `${color.muted} ${DOT} ${detail}${color.reset}` : '';
+	console.log(`${color.fg}${HEX}${color.reset} ${label}${tip}`);
+	stepOpen = true;
 }
 
 export function modelListText(activeModel, installed = []) {
-	const lines = [
-		hr(),
-		`${color.bold}Models${color.reset}`,
-		`${color.dim}active${color.reset}     ${activeModel}`,
-		'',
-		`${color.bold}Installed (ollama)${color.reset}`,
-	];
+	const rows = [`active ${DOT} ${activeModel}`, ''];
 	if (!installed.length) {
-		lines.push(`${color.dim}  (none — run ollama pull qwen2.5:3b)${color.reset}`);
+		rows.push('(none installed — ollama pull qwen2.5:3b)');
 	} else {
 		for (const tag of installed) {
-			const mark = String(activeModel).includes(tag) || tag.startsWith(String(activeModel).replace(/^ollama\//, ''))
-				? `${color.green}●${color.reset}`
-				: `${color.dim}○${color.reset}`;
-			lines.push(`  ${mark} ${tag}`);
+			const active = String(activeModel).includes(tag)
+				|| tag.startsWith(String(activeModel).replace(/^ollama\//, ''));
+			rows.push(`${active ? `${color.accent}${HEX}${color.reset}` : `${color.muted}${HEX}${color.reset}`} ${tag}`);
 		}
 	}
-	lines.push('', `${color.dim}Copix prefers your installed model when stretch tags are missing.${color.reset}`, hr());
-	return lines.join('\n');
+	return `\n${box(rows, { label: 'Models' })}\n`;
 }
 
 export function helpText() {
 	return [
-		hr(),
-		`${color.bold}Copix CLI${color.reset}  — same agent & tools as Copix Desktop`,
 		'',
-		`${color.bold}Usage${color.reset}`,
-		'  copix                     interactive session',
-		'  copix "prompt"            one-shot',
-		'  copix -p <dir> "prompt"   workspace directory',
+		box([
+			'Copix CLI — same agent & tools as Desktop',
+			'',
+			'copix                     interactive',
+			'copix "prompt"            one-shot',
+			'copix -p <dir> "prompt"   workspace',
+			'',
+			'/help /model /cwd /clear /exit',
+			'',
+			'Tools: create_project edit_file terminal',
+			'       read_file list_dir grep multitask',
+			'',
+			'Settings: ~/Copix/settings.json',
+			'Model:    ollama / qwen2.5:3b',
+		], { label: 'Help' }),
 		'',
-		`${color.bold}Slash commands${color.reset}`,
-		'  /help       this help',
-		'  /model      show active model + installed Ollama tags',
-		'  /cwd        print workspace',
-		'  /clear      clear chat history',
-		'  /exit       quit',
-		'',
-		`${color.bold}Tools${color.reset}`,
-		'  create_project  edit_file  write_file  append_file  delete_file',
-		'  read_file  list_dir  grep  terminal  multitask  spawn_subagent',
-		'',
-		`${color.bold}Settings${color.reset}`,
-		'  ~/Copix/settings.json   provider: ollama   modelId: qwen2.5:3b',
-		'  ollama pull qwen2.5:3b',
-		hr(),
 	].join('\n');
 }
