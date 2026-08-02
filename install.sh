@@ -23,20 +23,34 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$INSTALL_DIR" "$BIN_DIR"
+mkdir -p "$BIN_DIR"
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-  echo "Updating Copix in $INSTALL_DIR …"
-  git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH"
-  git -C "$INSTALL_DIR" checkout "$BRANCH"
-  git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
-else
-  echo "Installing Copix into $INSTALL_DIR …"
+install_or_update() {
+  if [ -d "$INSTALL_DIR/.git" ]; then
+    echo "Updating Copix in $INSTALL_DIR …"
+    # Throwaway install dir — always match origin exactly (handles diverged local history).
+    git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH"
+    git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+    git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
+    git -C "$INSTALL_DIR" clean -fd
+  else
+    echo "Installing Copix into $INSTALL_DIR …"
+    rm -rf "$INSTALL_DIR"
+    git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
+  fi
+}
+
+if ! install_or_update; then
+  echo "Git update failed — re-cloning $INSTALL_DIR …"
   rm -rf "$INSTALL_DIR"
   git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
 fi
 
-# Prefer sparse-ish layout: keep full clone but link the CLI entry.
+if [ ! -f "$INSTALL_DIR/cli/bin/copix.js" ]; then
+  echo "Install failed: $INSTALL_DIR/cli/bin/copix.js missing."
+  exit 1
+fi
+
 ln -sfn "$INSTALL_DIR/cli/bin/copix.js" "$BIN_DIR/copix"
 chmod +x "$INSTALL_DIR/cli/bin/copix.js" "$BIN_DIR/copix"
 
@@ -61,8 +75,11 @@ echo
 echo "Installed: $BIN_DIR/copix"
 if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
   echo
-  echo "Add this to your shell profile (~/.bashrc or ~/.zshrc):"
+  echo "Add this to your shell profile (~/.zshrc):"
   echo "  export PATH=\"$BIN_DIR:\$PATH\""
+  echo
+  echo "Then run:  source ~/.zshrc"
+  echo "Or invoke directly:  $BIN_DIR/copix"
 fi
 echo
 echo "Configure a provider key in ~/Copix/settings.json, then run:"
