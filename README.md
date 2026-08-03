@@ -28,7 +28,7 @@ copix doctor
 copix
 ```
 
-Installs into `~/.copix` and puts `copix` on your PATH (`~/.local/bin`, or `%USERPROFILE%\.local\bin` on Windows).
+Installs into `~/.copix` and puts `copix` on your PATH permanently (prefers `npm install -g`, then Homebrew/`/usr/local/bin`, otherwise `~/.local/bin` with shell profile updated automatically — no manual `export PATH`).
 
 ## Usage
 
