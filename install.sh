@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Copix CLI installer (macOS / Linux) — permanent install, no manual PATH edits.
+# Copix CLI installer (macOS / Linux)
+# Permanent install into a real bin dir already on PATH.
+# Never edits shell profiles (.zshrc / .bashrc / etc.).
+#
 # curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.sh | bash
 set -euo pipefail
 
+INSTALLER_VERSION="1.7.0"
 REPO="${COPIX_REPO:-https://github.com/EJH-BAE/Copix.git}"
 BRANCH="${COPIX_BRANCH:-main}"
 INSTALL_DIR="${COPIX_INSTALL_DIR:-$HOME/.copix}"
-PATH_MARKER="# Copix CLI"
-PATH_LINE_PREFIX='export PATH="'
 
-echo "Copix CLI — standalone installer (macOS / Linux)"
+echo "Copix CLI installer ${INSTALLER_VERSION}"
+echo "Permanent install — no shell profile edits"
 echo
 
 if ! command -v node >/dev/null 2>&1; then
@@ -40,7 +43,6 @@ install_or_update() {
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH"
     git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
     git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
-    # -ffd also removes nested git repos left behind by old agent sessions
     git -C "$INSTALL_DIR" clean -ffd
   else
     echo "Installing Copix into $INSTALL_DIR …"
@@ -70,7 +72,32 @@ chmod +x "$INSTALL_DIR/cli/bin/copix.js"
 echo "Installing CLI dependencies …"
 npm install --prefix "$INSTALL_DIR/cli" --omit=dev --silent
 
-# --- Permanent binary placement -------------------------------------------------
+# Remove leftover ~/.local/bin shim from older installers (optional cleanup)
+if [ -L "$HOME/.local/bin/copix" ] || [ -f "$HOME/.local/bin/copix" ]; then
+  rm -f "$HOME/.local/bin/copix" 2>/dev/null || true
+fi
+
+# Remove PATH markers older installers may have added (we never want profile hacks)
+cleanup_old_profile_marker() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  if grep -Fqs '# Copix CLI' "$file" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp)"
+    # Drop the marker line and the following export PATH=… line
+    awk '
+      $0 == "# Copix CLI" { skip=1; next }
+      skip==1 && $0 ~ /^export PATH=/ { skip=0; next }
+      { skip=0; print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+    echo "Removed old Copix PATH lines from $file"
+  fi
+}
+cleanup_old_profile_marker "$HOME/.zshrc"
+cleanup_old_profile_marker "$HOME/.zprofile"
+cleanup_old_profile_marker "$HOME/.bashrc"
+cleanup_old_profile_marker "$HOME/.bash_profile"
+cleanup_old_profile_marker "$HOME/.profile"
 
 path_has_dir() {
   case ":$PATH:" in
@@ -79,125 +106,105 @@ path_has_dir() {
   esac
 }
 
-is_writable_dir() {
-  [ -d "$1" ] && [ -w "$1" ]
-}
-
-ensure_dir() {
-  mkdir -p "$1" 2>/dev/null || return 1
-  [ -w "$1" ]
-}
-
-# Append PATH export to a profile once (idempotent).
-persist_path_in_file() {
-  local file="$1"
-  local bin_dir="$2"
-  local line="export PATH=\"${bin_dir}:\$PATH\""
-  touch "$file"
-  if grep -Fqs "$PATH_MARKER" "$file" 2>/dev/null; then
-    return 0
-  fi
-  {
-    echo ""
-    echo "$PATH_MARKER"
-    echo "$line"
-  } >> "$file"
-}
-
-persist_path_for_shells() {
-  local bin_dir="$1"
-  local updated=()
-  # macOS login + interactive shells; Linux bash/zsh
-  local candidates=(
-    "$HOME/.zprofile"
-    "$HOME/.zshrc"
-    "$HOME/.bash_profile"
-    "$HOME/.bashrc"
-    "$HOME/.profile"
-  )
-  local f
-  for f in "${candidates[@]}"; do
-    # Only touch files that already exist, plus always ensure zshrc/zprofile on macOS/zsh
-    if [ -f "$f" ] || [[ "$f" == "$HOME/.zprofile" || "$f" == "$HOME/.zshrc" ]]; then
-      persist_path_in_file "$f" "$bin_dir"
-      updated+=("$f")
-    fi
-  done
-  if [ "${#updated[@]}" -gt 0 ]; then
-    echo "Permanently added ${bin_dir} to PATH in: ${updated[*]}"
+write_wrapper() {
+  # $1 = destination path for `copix`
+  # $2 = "sudo" or "user"
+  local dest="$1"
+  local mode="$2"
+  local body
+  body="$(cat <<EOF
+#!/usr/bin/env bash
+exec node "$INSTALL_DIR/cli/bin/copix.js" "\$@"
+EOF
+)"
+  if [ "$mode" = "sudo" ]; then
+    echo "$body" | sudo tee "$dest" >/dev/null
+    sudo chmod 755 "$dest"
+  else
+    printf '%s\n' "$body" > "$dest"
+    chmod 755 "$dest"
   fi
 }
 
-link_copix() {
+try_install_dir() {
   local bin_dir="$1"
-  ensure_dir "$bin_dir" || return 1
-  ln -sfn "$INSTALL_DIR/cli/bin/copix.js" "$bin_dir/copix"
-  chmod +x "$bin_dir/copix"
+  local mode="$2" # user | sudo
+  [ -n "$bin_dir" ] || return 1
+
+  if [ "$mode" = "user" ]; then
+    mkdir -p "$bin_dir" 2>/dev/null || return 1
+    [ -w "$bin_dir" ] || return 1
+    write_wrapper "$bin_dir/copix" user || return 1
+  else
+    sudo mkdir -p "$bin_dir"
+    write_wrapper "$bin_dir/copix" sudo || return 1
+  fi
   echo "$bin_dir/copix"
 }
 
 COPIX_BIN=""
-INSTALL_METHOD=""
+METHOD=""
 
-# 1) Prefer npm global (usually already on PATH for Homebrew / official Node / nvm)
-if [ -z "${COPIX_BIN_DIR:-}" ]; then
-  if npm install -g "$INSTALL_DIR/cli" --silent 2>/tmp/copix-npm-g.err; then
-    NPM_PREFIX="$(npm prefix -g 2>/dev/null || true)"
-    if [ -n "$NPM_PREFIX" ] && [ -x "$NPM_PREFIX/bin/copix" ]; then
-      COPIX_BIN="$NPM_PREFIX/bin/copix"
-      INSTALL_METHOD="npm-global"
-    elif command -v copix >/dev/null 2>&1; then
-      COPIX_BIN="$(command -v copix)"
-      INSTALL_METHOD="npm-global"
+# 1) Explicit override
+if [ -n "${COPIX_BIN_DIR:-}" ]; then
+  if COPIX_BIN="$(try_install_dir "$COPIX_BIN_DIR" user)"; then
+    METHOD="COPIX_BIN_DIR"
+  elif COPIX_BIN="$(try_install_dir "$COPIX_BIN_DIR" sudo)"; then
+    METHOD="COPIX_BIN_DIR (sudo)"
+  else
+    echo "Cannot write to COPIX_BIN_DIR=$COPIX_BIN_DIR"
+    exit 1
+  fi
+fi
+
+# 2) npm global — only accept if the resulting bin dir is already on PATH
+if [ -z "$COPIX_BIN" ]; then
+  NPM_PREFIX="$(npm prefix -g 2>/dev/null || true)"
+  NPM_BIN_DIR=""
+  if [ -n "$NPM_PREFIX" ]; then
+    if [ -d "$NPM_PREFIX/bin" ]; then
+      NPM_BIN_DIR="$NPM_PREFIX/bin"
+    else
+      NPM_BIN_DIR="$NPM_PREFIX"
+    fi
+  fi
+  if [ -n "$NPM_BIN_DIR" ] && path_has_dir "$NPM_BIN_DIR" && [ -w "$NPM_BIN_DIR" ]; then
+    if npm install -g "$INSTALL_DIR/cli" --silent 2>/tmp/copix-npm-g.err; then
+      if [ -x "$NPM_BIN_DIR/copix" ]; then
+        COPIX_BIN="$NPM_BIN_DIR/copix"
+        METHOD="npm-global ($NPM_BIN_DIR)"
+      fi
     fi
   fi
 fi
 
-# 2) Explicit override or a directory already on PATH
+# 3) Homebrew bin (Apple Silicon / Intel) when already on PATH and writable
 if [ -z "$COPIX_BIN" ]; then
-  CANDIDATES=()
-  if [ -n "${COPIX_BIN_DIR:-}" ]; then
-    CANDIDATES+=("$COPIX_BIN_DIR")
-  fi
-  # Homebrew / standard locations first
-  CANDIDATES+=("/opt/homebrew/bin" "/usr/local/bin" "$HOME/.local/bin")
-  # Any other writable bin-like dir already on PATH
-  OLD_IFS="$IFS"
-  IFS=':'
-  for d in $PATH; do
-    [ -n "$d" ] || continue
-    case "$d" in
-      */bin|*/bin/*) CANDIDATES+=("$d") ;;
-    esac
-  done
-  IFS="$OLD_IFS"
-
-  for d in "${CANDIDATES[@]}"; do
-    if path_has_dir "$d" && (is_writable_dir "$d" || ensure_dir "$d"); then
-      if COPIX_BIN="$(link_copix "$d")"; then
-        INSTALL_METHOD="path-dir"
+  for d in /opt/homebrew/bin /usr/local/bin; do
+    if path_has_dir "$d" && [ -d "$d" ] && [ -w "$d" ]; then
+      if COPIX_BIN="$(try_install_dir "$d" user)"; then
+        METHOD="$d"
         break
       fi
     fi
   done
 fi
 
-# 3) Last resort: ~/.local/bin + permanently write shell profiles
+# 4) /usr/local/bin with sudo — on default macOS/Linux PATH, no profile edits
 if [ -z "$COPIX_BIN" ]; then
-  FALLBACK="$HOME/.local/bin"
-  COPIX_BIN="$(link_copix "$FALLBACK")"
-  INSTALL_METHOD="fallback"
-  if ! path_has_dir "$FALLBACK"; then
-    persist_path_for_shells "$FALLBACK"
-    export PATH="$FALLBACK:$PATH"
+  echo
+  echo "Installing to /usr/local/bin (on your default PATH)."
+  echo "macOS may ask for your password once."
+  echo
+  if COPIX_BIN="$(try_install_dir /usr/local/bin sudo)"; then
+    METHOD="/usr/local/bin (sudo)"
   fi
 fi
 
-# If we linked into a dir not on PATH (rare), persist it
-BIN_DIR="$(dirname "$COPIX_BIN")"
-if ! path_has_dir "$BIN_DIR"; then
-  persist_path_for_shells "$BIN_DIR"
-  export PATH="$BIN_DIR:$PATH"
+if [ -z "$COPIX_BIN" ]; then
+  echo "Install failed: could not write a \`copix\` command onto your PATH."
+  echo "Try: sudo mkdir -p /usr/local/bin && re-run this installer."
+  exit 1
 fi
 
 COPIX_HOME="${HOME}/Copix"
@@ -218,28 +225,28 @@ if [ ! -f "$COPIX_HOME/settings.json" ]; then
 JSON
 fi
 
-echo
-echo "Installed permanently: $COPIX_BIN"
-case "$INSTALL_METHOD" in
-  npm-global) echo "Method: npm global (already on your PATH)" ;;
-  path-dir)   echo "Method: linked into $BIN_DIR (already on your PATH)" ;;
-  fallback)   echo "Method: $BIN_DIR + shell profile PATH (saved for new terminals)" ;;
-esac
+# Make the new binary visible in this shell (hash table)
+hash -r 2>/dev/null || true
 
-# Sanity check in this shell
+echo
+echo "Installed: $COPIX_BIN"
+echo "Method:    $METHOD"
+echo "No shell profiles were modified."
+
 if command -v copix >/dev/null 2>&1; then
-  echo "Verified: $(command -v copix)  ($(copix --version 2>/dev/null || echo 'ok'))"
+  echo "Verified:  $(command -v copix) ($(copix --version 2>/dev/null || true))"
 else
-  echo "Note: open a new terminal tab so PATH reloads, then run: copix"
+  # /usr/local/bin should already be on PATH; force a hint only if somehow missing
+  if path_has_dir "$(dirname "$COPIX_BIN")"; then
+    echo "If \`copix\` is not found, run: hash -r"
+  else
+    echo "WARNING: $(dirname "$COPIX_BIN") is not on PATH in this shell."
+    echo "It is on the default macOS PATH — open a new Terminal window and run: copix doctor"
+  fi
 fi
 
-echo
-echo "No account required. Copix CLI talks to local Ollama."
 echo
 echo "Next:"
 echo "  ollama pull qwen2.5:3b"
 echo "  copix doctor"
 echo "  copix"
-echo
-echo "Windows install:"
-echo "  irm https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.ps1 | iex"
