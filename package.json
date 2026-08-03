@@ -1,0 +1,24 @@
+{
+  "name": "copix-cli",
+  "version": "1.6.0",
+  "private": true,
+  "description": "Copix CLI — standalone coding agent for macOS and Windows",
+  "type": "module",
+  "bin": {
+    "copix": "./bin/copix.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node ./bin/copix.js",
+    "copix": "node ./bin/copix.js",
+    "doctor": "node ./bin/copix.js doctor",
+    "smoke": "node ./scripts/smoke-tools.mjs",
+    "postinstall": "node -e \"console.log('Copix CLI ready — standalone agent under cli/agent')\""
+  },
+  "dependencies": {
+    "tsx": "^4.20.3"
+  },
+  "license": "UNLICENSED"
+}
