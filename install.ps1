@@ -59,12 +59,6 @@ npm install --prefix (Join-Path $InstallDir 'cli') --omit=dev --silent
 $Shim = Join-Path $BinDir 'copix.cmd'
 @"
 @echo off
-node "%USERPROFILE%\.copix\cli\bin\copix.js" %*
-"@.Replace('%USERPROFILE%\.copix\cli\bin\copix.js', $CopixJs) | Set-Content -Encoding ASCII $Shim
-
-# Prefer absolute path in shim
-@"
-@echo off
 node "$CopixJs" %*
 "@ | Set-Content -Encoding ASCII $Shim
 
