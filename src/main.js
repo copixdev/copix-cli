@@ -15,8 +15,8 @@ const AGENT_SRC = path.resolve(__dirname, '../agent');
 const FALLBACK_MODEL = 'qwen2.5:3b';
 const INSTALL_HINT =
 	process.platform === 'win32'
-		? 'irm https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.ps1 | iex'
-		: 'curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.sh | bash';
+		? 'irm https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.ps1 | iex'
+		: 'curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.sh | bash';
 
 function parseArgs(argv) {
 	const opts = {

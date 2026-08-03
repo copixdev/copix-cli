@@ -11,13 +11,13 @@ Desktop installers: [`release/`](../release/) · [v4.3.0](https://github.com/EJH
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.ps1 | iex
+irm https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.ps1 | iex
 ```
 
 Requires **Node.js 18+**, **git**, and [Ollama](https://ollama.com).

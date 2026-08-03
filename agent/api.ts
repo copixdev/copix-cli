@@ -19,7 +19,7 @@ function resolveCopixApi(): CopixApi | undefined {
 
 function missingCopixApi(): never {
 	const msg =
-		'Copix API unavailable — reinstall the CLI: curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/main/cli/install.sh | bash  (Windows: irm .../cli/install.ps1 | iex)';
+		'Copix API unavailable — reinstall the CLI: curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.sh | bash  (Windows: irm .../cli/install.ps1 | iex)';
 	console.error('[copix]', msg);
 	throw new Error(msg);
 }
