@@ -24,7 +24,7 @@ export const AGENT_MODES: AgentModeDef[] = [
 	{
 		id: 'code',
 		label: 'Code',
-		description: 'Implement features, edit files, and run builds.',
+		description: 'Create and edit files yourself to implement features and run builds.',
 		surfaces: ['editor', 'terminal', 'changes'],
 	},
 	{

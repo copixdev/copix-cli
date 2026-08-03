@@ -175,7 +175,8 @@ Surgical search-and-replace in an existing file.
 			description: `## write_file
 Create or **fully overwrite** a file on the user's local machine.
 
-**When to use:** New files or complete rewrites. Parent directories are created automatically.
+**When to use:** New files or complete rewrites the user asked for. Parent directories are created automatically.
+**Always use this (or edit_file) instead of telling the user to create/paste the file themselves.**
 
 **Tips:**
 - Provide the **complete** file body in \`content\`

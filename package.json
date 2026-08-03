@@ -1,6 +1,6 @@
 {
   "name": "copix-cli",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "description": "Copix CLI — standalone coding agent for macOS and Windows",
   "type": "module",
