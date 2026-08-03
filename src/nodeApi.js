@@ -23,6 +23,8 @@ function expandWorkspaceHome(raw, userHome) {
 	if (home.startsWith('~')) {
 		home = path.join(userHome, home.slice(1).replace(/^[/\\]+/, ''));
 	}
+	// Normalize mistaken /user/{name} → real OS home layout
+	home = home.replace(/^\/user\//i, process.platform === 'linux' ? '/home/' : '/Users/');
 	return path.normalize(home);
 }
 
@@ -67,16 +69,22 @@ function normalizeUserPath(raw, workspaceRoot) {
 	const home = os.homedir();
 	const username = path.basename(home);
 	const isWin = process.platform === 'win32';
+	const isLinux = process.platform === 'linux';
+	const usersRoot = isWin ? 'C:/Users' : isLinux ? '/home' : '/Users';
 
 	p = p.replace(/^macintosh hd[/:]?/i, '/');
 	if (p.startsWith('~/') || p === '~') {
 		return path.normalize(path.join(home, p.slice(1).replace(/^\/+/, '')));
 	}
-	if (/^\/?users\//i.test(p)) {
-		const rest = p.replace(/^\/?users\/[^/]+\/?/i, '');
-		const named = p.match(/^\/?users\/([^/]+)/i)?.[1];
+	// Treat /user/... as a typo for the OS users directory
+	if (/^\/?user\//i.test(p) && !/^\/?users\//i.test(p)) {
+		p = p.replace(/^\/?user\//i, `${usersRoot}/`);
+	}
+	if (/^\/?users\//i.test(p) || /^\/?home\//i.test(p) || /^[A-Za-z]:\/Users\//i.test(p)) {
+		const rest = p.replace(/^(?:\/?users\/|\/?home\/|[A-Za-z]:\/Users\/)[^/]+\/?/i, '');
+		const named = p.match(/^(?:\/?users\/|\/?home\/|[A-Za-z]:\/Users\/)([^/]+)/i)?.[1];
 		const base = named && named.toLowerCase() !== 'current' && named !== '{username}'
-			? (isWin ? `C:/Users/${named}` : `/Users/${named}`)
+			? (isWin ? `C:/Users/${named}` : `${usersRoot}/${named}`)
 			: home;
 		p = rest ? `${base.replace(/\\/g, '/')}/${rest}` : base.replace(/\\/g, '/');
 	}

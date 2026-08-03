@@ -219,10 +219,26 @@ if [ ! -f "$COPIX_HOME/settings.json" ]; then
     "modelId": "qwen2.5:3b",
     "lowVram": false
   },
-  "workspace": { "homeDirectory": "" },
+  "workspace": { "homeDirectory": "/Users/{username}" },
   "agentMode": "code"
 }
 JSON
+  # Linux default home layout
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    cat > "$COPIX_HOME/settings.json" <<'JSON'
+{
+  "model": {
+    "provider": "ollama",
+    "apiKey": "",
+    "selection": "auto",
+    "modelId": "qwen2.5:3b",
+    "lowVram": false
+  },
+  "workspace": { "homeDirectory": "/home/{username}" },
+  "agentMode": "code"
+}
+JSON
+  fi
 fi
 
 # Make the new binary visible in this shell (hash table)

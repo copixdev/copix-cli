@@ -34,6 +34,10 @@ export function isWindows(): boolean {
 	return getHostPlatform() === 'win32';
 }
 
+export function isLinux(): boolean {
+	return getHostPlatform() === 'linux';
+}
+
 /** Display name for the integrated terminal shell. */
 export function shellLabel(): string {
 	if (isWindows()) return 'PowerShell';
@@ -49,14 +53,22 @@ export function shellPrompt(cwd: string): string {
 	return `${leaf} $`;
 }
 
-/** Example home path for settings placeholders / docs. */
+/**
+ * Default Copix home directory template.
+ * Empty settings resolve to the real OS home (os.homedir()).
+ * macOS: /Users/{username}
+ * Linux: /home/{username}
+ * Windows: C:\Users\{username}
+ */
 export function homePathExample(): string {
 	if (isWindows()) return 'C:\\Users\\{username}';
+	if (isLinux()) return '/home/{username}';
 	return '/Users/{username}';
 }
 
 /** Example project path used in agent prompts. */
 export function projectPathExample(name = 'my-app'): string {
 	if (isWindows()) return `C:\\Users\\{username}\\${name}`;
+	if (isLinux()) return `/home/{username}/${name}`;
 	return `/Users/{username}/${name}`;
 }

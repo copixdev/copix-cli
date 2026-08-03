@@ -69,11 +69,26 @@ CLI conversations save to `~/Copix/sessions.json` in the same format Copix Deskt
 
 ## Settings
 
+Default Copix home is the **OS user home**:
+
+| OS | Default `workspace.homeDirectory` |
+| --- | --- |
+| macOS | `/Users/{username}` |
+| Linux | `/home/{username}` |
+| Windows | `C:\Users\{username}` |
+
+`{username}` is expanded automatically. Empty string also means the real OS home.
+
 ```json
 {
   "model": {
     "provider": "ollama",
     "modelId": "qwen2.5:3b"
+  },
+  "workspace": {
+    "homeDirectory": "/Users/{username}"
   }
 }
 ```
+
+Preferences live in `~/Copix/settings.json`.

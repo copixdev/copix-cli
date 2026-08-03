@@ -110,7 +110,7 @@ if (-not (Test-Path $Settings)) {
     "modelId": "qwen2.5:3b",
     "lowVram": false
   },
-  "workspace": { "homeDirectory": "" },
+  "workspace": { "homeDirectory": "C:\\Users\\{username}" },
   "agentMode": "code"
 }
 '@ | Set-Content -Encoding UTF8 $Settings

@@ -194,6 +194,7 @@ ${rules.map(r => `- ${r}`).join('\n')}
 ## Workspace
 
 - **Root:** \`${opts.workspaceRoot}\`
+- **Default Copix home:** the OS user home — \`${homePathExample()}\` (settings \`workspace.homeDirectory\`; empty means the real home from the OS).
 - Agents start in the user home so the whole machine is reachable (absolute paths OK).
 - For a **new** app, call \`create_project\` with a kebab name — it creates \`${projectPathExample('<name>')}\` (or under a parent the user specified), then work inside that folder.
 - Relative paths are relative to the current workspace root (switches to the new project after \`create_project\`).
