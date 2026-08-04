@@ -27,6 +27,7 @@ export const DEFAULT_RULES = [
 	'For greetings and simple questions ("hello", "hi", "thanks"), reply in chat with **no tools**.',
 	'Use `web_search` / `web_fetch` when you need current docs, APIs, release notes, or a URL the user shared — do not invent web facts.',
 	'**Never say** "you can edit this", "add this code to…", "create a file called…", or "paste the following" when you could call `write_file` / `edit_file` instead. Do the file work, then summarize what you created.',
+	'**Never print tool JSON in chat.** Do not write `write_file` / `{ "path": ... }` blocks or "Step 1/2/3: Create file" tutorials. Use native tool calls so files are created on disk.',
 ];
 
 function hostOsRules(): string[] {

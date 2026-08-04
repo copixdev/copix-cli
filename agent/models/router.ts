@@ -10,7 +10,13 @@ import {
 	OPENROUTER_MAX_TOKENS, OPENROUTER_MAX_TOKENS_FLOOR, parseOpenRouterAffordableTokens, sanitizeGroqModelId,
 } from './modelCatalog.js';
 import { inferTaskKind, isContinuationMessage, isReadOnlyTask, isSimpleChatMessage } from './modelSelector.js';
-import { actionToTool, parseStructuredResponse, type StructuredAgentResponse } from './structuredResponse.js';
+import {
+	actionToTool,
+	looksLikeToolDump,
+	parsePseudoToolCalls,
+	parseStructuredResponse,
+	type StructuredAgentResponse,
+} from './structuredResponse.js';
 import { webFetch, webSearch } from './webBrowse.js';
 import { computeLineDiff, truncateText } from '../utils/lineDiff.js';
 import { assertSafeFilePath } from '../utils/secrets.js';
@@ -765,10 +771,15 @@ Do not call tools. Write clearly for the user.`;
 const CONTINUE_USER_PROMPT = `Continue the task from where you left off — based on the user's LATEST message only.
 - Do not run unrelated existing scripts.
 - Read existing files first if needed — do not recreate work already done for THIS task.
-- Create or edit any remaining files with tools for the requested work.
+- Create or edit any remaining files with **native tool calls** (write_file / edit_file / create_project).
+- Never print write_file JSON, "Step N:", or tutorials for the user to copy — call the tools yourself.
 - Do not repeat the same terminal command.
 - Do not stop until the work is complete or you are genuinely blocked and need user input.
 - When finished, reply with a clear markdown summary for the user.`;
+
+const FORCE_TOOLS_PROMPT = `You dumped tool syntax as chat text. That does not create files.
+Call the real tools now (write_file, edit_file, create_project, etc.) with native tool_calls.
+Do not write "Step 1/2/3". Do not show JSON for the user to paste. Execute.`;
 
 const MAX_AGENT_ROUNDS = 40;
 const MAX_HISTORY_TURNS = 24;
@@ -779,7 +790,8 @@ const MAX_INCOMPLETE_RETRIES = 4;
 function looksLikePlanningOnly(text: string): boolean {
 	const t = text.trim();
 	if (!t) return true;
-	return /\b(I will|I'll|let me|first,? I'll|step 1|plan to|going to|next I)\b/i.test(t)
+	if (looksLikeToolDump(t)) return true;
+	return /\b(I will|I'll|let me|first,? I'll|step\s*\d+|plan to|going to|next I|create .+ file)\b/i.test(t)
 		&& !/\b(created|updated|wrote|edited|done|complete|finished|saved|wrote to)\b/i.test(t);
 }
 
@@ -1090,7 +1102,9 @@ export async function runAgent(
 			const { assistantText, toolCalls } = round;
 
 				if (!toolCalls.size) {
-				const parsed = parseStructuredResponse(assistantText);
+				const parsed =
+					parseStructuredResponse(assistantText)
+					|| (!isChatOnlyTask(taskKind, effectiveUserMessage) ? parsePseudoToolCalls(assistantText) : null);
 				if (parsed) {
 					const displayMessage = parsed.message || '(executed actions)';
 					const actions = isChatOnlyTask(taskKind, effectiveUserMessage)
@@ -1116,6 +1130,19 @@ export async function runAgent(
 					messages.push({ role: 'assistant', content: displayMessage });
 					callbacks.onStatus('');
 					return;
+				}
+				// Model narrated write_file / "Step N" without executable JSON — force real tool use
+				if (
+					!isReadOnlyTask(taskKind)
+					&& !isChatOnlyTask(taskKind, effectiveUserMessage)
+					&& looksLikeToolDump(assistantText)
+					&& incompleteRetries < MAX_INCOMPLETE_RETRIES
+				) {
+					incompleteRetries++;
+					callbacks.onClearText?.();
+					messages.push({ role: 'assistant', content: assistantText });
+					messages.push({ role: 'user', content: FORCE_TOOLS_PROMPT });
+					continue;
 				}
 				if (!assistantText.trim() && hadToolUse) {
 					if (emptyReplyRetries < MAX_EMPTY_REPLY_RETRIES) {
