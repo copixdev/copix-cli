@@ -258,7 +258,7 @@ export function helpText() {
 				: 'Install: curl -fsSL .../cli/install.sh | bash',
 			'Settings: ~/Copix/settings.json',
 			'History:  ~/Copix/sessions.json (shared with Desktop)',
-			'License:  proprietary — free to use, not open source',
+			'License:  MIT — open source',
 		], { label: 'Help' }),
 		'',
 	].join('\n');
