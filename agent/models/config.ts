@@ -113,7 +113,7 @@ export function buildModelHeaders(config: ModelConfig): Record<string, string> {
 		return {
 			'Content-Type': 'application/json',
 			Authorization: `Bearer ${config.apiKey ?? ''}`,
-			'HTTP-Referer': 'https://github.com/EJH-BAE/Copix',
+			'HTTP-Referer': 'https://github.com/copixdev/Copix',
 			'X-Title': 'Copix Studio',
 		};
 	}

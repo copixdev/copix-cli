@@ -3,11 +3,11 @@
 # Permanent install into a real bin dir already on PATH.
 # Never edits shell profiles (.zshrc / .bashrc / etc.).
 #
-# curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash
 set -euo pipefail
 
 INSTALLER_VERSION="1.7.0"
-REPO="${COPIX_REPO:-https://github.com/EJH-BAE/Copix.git}"
+REPO="${COPIX_REPO:-https://github.com/copixdev/Copix.git}"
 BRANCH="${COPIX_BRANCH:-main}"
 INSTALL_DIR="${COPIX_INSTALL_DIR:-$HOME/.copix}"
 

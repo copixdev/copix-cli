@@ -4,20 +4,20 @@ Standalone terminal coding agent for **macOS** and **Windows** — same tools as
 
 **No account.** Local [Ollama](https://ollama.com) only. The agent **creates and edits files for you** — it does not ask you to paste code into the project. Copix is open source (MIT) — see [LICENSE.txt](../LICENSE.txt).
 
-Desktop installers: [`release/`](../release/) · [v4.3.0](https://github.com/EJH-BAE/Copix/releases/tag/v4.3.0).
+Desktop installers: [`release/`](../release/) · [v4.3.0](https://github.com/copixdev/Copix/releases/tag/v4.3.0).
 
 ## Install
 
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.ps1 | iex
+irm https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.ps1 | iex
 ```
 
 Requires **Node.js 18+**, **git**, and [Ollama](https://ollama.com).

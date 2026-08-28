@@ -1,8 +1,8 @@
 # Copix CLI installer (Windows) — permanent user install, PATH updated automatically.
-# irm https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.ps1 | iex
+# irm https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 
-$Repo = if ($env:COPIX_REPO) { $env:COPIX_REPO } else { 'https://github.com/EJH-BAE/Copix.git' }
+$Repo = if ($env:COPIX_REPO) { $env:COPIX_REPO } else { 'https://github.com/copixdev/Copix.git' }
 $Branch = if ($env:COPIX_BRANCH) { $env:COPIX_BRANCH } else { 'main' }
 $InstallDir = if ($env:COPIX_INSTALL_DIR) { $env:COPIX_INSTALL_DIR } else { Join-Path $HOME '.copix' }
 
@@ -127,4 +127,4 @@ Write-Host '  copix doctor'
 Write-Host '  copix'
 Write-Host ''
 Write-Host 'macOS / Linux install:'
-Write-Host '  curl -fsSL https://raw.githubusercontent.com/EJH-BAE/Copix/refs/heads/main/cli/install.sh | bash'
+Write-Host '  curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash'
