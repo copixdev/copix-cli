@@ -3,7 +3,7 @@
  * Raw mode matches the prompt (↑↓, enter, esc). Plain mode asks for a number or name.
  */
 import readline from 'node:readline';
-import { color, isPlain, termCols } from './ui.js';
+import { color, isPlain, scrubPlain, termCols } from './ui.js';
 
 const ESC = '\x1b[';
 
@@ -223,8 +223,8 @@ async function selectPlain({ label, items }) {
 	console.log('');
 	console.log(label);
 	for (let i = 0; i < items.length; i++) {
-		const hint = items[i].hint ? ` - ${items[i].hint}` : '';
-		console.log(`${i + 1}. ${items[i].label}${hint}`);
+		const hint = items[i].hint ? ` - ${scrubPlain(items[i].hint)}` : '';
+		console.log(scrubPlain(`${i + 1}. ${items[i].label}${hint}`));
 	}
 	const answer = await readLine('Choose a number or name (empty cancels): ');
 	// Blank line, label, each row, and the question line.

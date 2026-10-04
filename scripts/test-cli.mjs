@@ -16,7 +16,7 @@ import {
 	selectOption,
 	SUGGESTED_MODELS,
 } from '../src/select.js';
-import { helpText, isPlain, keysText, printBanner, setPlain } from '../src/ui.js';
+import { boxDoctor, helpText, isPlain, keysText, printBanner, setPlain } from '../src/ui.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ESC = '\x1b[';
@@ -153,6 +153,56 @@ test('plain mode drops color and boxes without changing the default banner', () 
 	}
 });
 
+const DECORATIVE = /[·→⬢✓✗]/;
+
+test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check marks', () => {
+	setPlain(true);
+	try {
+		assert.doesNotMatch(helpText(), DECORATIVE);
+		assert.doesNotMatch(keysText(), DECORATIVE);
+		assert.match(keysText(), /clear the line; quit when it is already empty/);
+		assert.doesNotMatch(keysText(), /quits the plain prompt/);
+		const banner = captureLog(() => {
+			printBanner({
+				version: '1.7.2',
+				model: 'auto · ollama/qwen2.5:3b',
+				workspace: '/tmp',
+				ollamaOk: false,
+				installedCount: 0,
+			});
+		}).join('\n');
+		assert.doesNotMatch(banner, DECORATIVE);
+		assert.match(banner, /auto - ollama\/qwen2\.5:3b/);
+		const doctor = boxDoctor([
+			'copix 1 · linux',
+			'✓ Node',
+			'✗ Ollama',
+			'· Settings',
+			'⬢ title → next',
+		]);
+		assert.doesNotMatch(doctor, DECORATIVE);
+		assert.match(doctor, /ok Node/);
+		assert.match(doctor, /no Ollama/);
+		assert.match(doctor, /-> next/);
+	} finally {
+		setPlain(false);
+	}
+
+	const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+		import { isPlain, helpText, keysText } from './src/ui.js';
+		if (!isPlain()) process.exit(2);
+		const text = helpText() + keysText();
+		if (/[·→⬢✓✗]/.test(text)) process.exit(3);
+		process.stdout.write('plain-ok');
+	`], {
+		cwd: path.join(here, '..'),
+		env: { ...process.env, NO_COLOR: '1' },
+		encoding: 'utf8',
+	});
+	assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
+	assert.match(child.stdout, /plain-ok/);
+});
+
 test('model choices put auto first and keep the current tag selectable', () => {
 	const installed = ['qwen2.5:3b', 'llama3:8b'];
 	const items = modelChoices({ installed, selection: 'manual', modelId: 'ollama/llama3:8b' });
@@ -243,6 +293,17 @@ test('interactive picker selects, jumps, and cancels', () => {
 			assert.match(screen, expected, `${mode} screen`);
 			assert.doesNotMatch(screen, /enter select|╭|Choose a number or name|1\. auto/, `${mode} left picker chrome:\n${screen}`);
 		}
+	}
+});
+
+test('Ctrl+C clears a typed line and quits only when the line is empty', () => {
+	for (const mode of ['raw-text', 'raw-empty', 'plain-text', 'plain-empty']) {
+		const res = spawnSync('python3', [path.join(here, 'drive_ctrlc.py'), mode], {
+			encoding: 'utf8',
+			timeout: 8000,
+		});
+		assert.equal(res.status, 0, `${mode}\n${res.stdout}\n${res.stderr}`);
+		assert.match(res.stdout, /LINE:null/, mode);
 	}
 });
 

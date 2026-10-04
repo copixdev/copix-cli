@@ -35,6 +35,24 @@ export function setPlain(on) {
 	plainMode = Boolean(on);
 }
 
+/** Decorative marks that plain text, including NO_COLOR, must not print. */
+const PLAIN_MARKS = [
+	['⬢ ', ''],
+	['⬢', ''],
+	['·', '-'],
+	['→', '->'],
+	['✓', 'ok'],
+	['✗', 'no'],
+];
+
+export function scrubPlain(text) {
+	const raw = String(text ?? '');
+	if (!plainMode) return raw;
+	let out = raw;
+	for (const [from, to] of PLAIN_MARKS) out = out.replaceAll(from, to);
+	return out;
+}
+
 export const color = new Proxy(ANSI, {
 	get(target, prop) {
 		if (plainMode) return '';
@@ -204,7 +222,7 @@ function box(lines, { label } = {}) {
 		const out = [];
 		if (label) out.push(`${label}:`);
 		for (const line of lines) {
-			for (const wrapped of wrapText(stripAnsi(line), width)) out.push(wrapped);
+			for (const wrapped of wrapText(stripAnsi(line), width)) out.push(scrubPlain(wrapped));
 		}
 		return out.join('\n');
 	}
@@ -232,7 +250,7 @@ export function printBanner({ version, model, workspace, ollamaOk, installedCoun
 			: '';
 		console.log('');
 		console.log(`Copix agent cli ${version}`);
-		console.log(`Model: ${model}`);
+		console.log(`Model: ${scrubPlain(model)}`);
 		console.log(`Workspace: ${workspace}`);
 		console.log(ollamaOk ? `Ollama: ready${models}` : 'Ollama: offline. Run ollama pull qwen2.5:3b');
 		console.log('');
@@ -261,7 +279,7 @@ export function printFooter({ model, mode = 'Agent', filesEdited = 0, workspace 
 	if (plainMode) {
 		const files = filesEdited > 0 ? `, ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited` : '';
 		const where = workspace ? ` Workspace: ${workspace}` : '';
-		console.log(`${mode}. Model: ${model}${files}${where}`);
+		console.log(`${mode}. Model: ${scrubPlain(model)}${files}${where}`);
 		console.log('Commands: /help, /keys, /plain, /model, /exit');
 		console.log('');
 		return;
@@ -291,7 +309,7 @@ export function beginAssistant() {
 
 export function writeModelLine(modelId, reason) {
 	if (plainMode) {
-		console.log(reason ? `Model: ${modelId} (${reason})` : `Model: ${modelId}`);
+		console.log(scrubPlain(reason ? `Model: ${modelId} (${reason})` : `Model: ${modelId}`));
 		stepOpen = true;
 		return;
 	}
@@ -305,7 +323,7 @@ export function writeStatus(message) {
 	const clean = String(message).replace(/\s+/g, ' ').trim();
 	if (!clean) return;
 	if (plainMode) {
-		console.log(clean);
+		console.log(scrubPlain(clean));
 		stepOpen = true;
 		return;
 	}
@@ -316,7 +334,7 @@ export function writeStatus(message) {
 export function writeToolCall(name, args = {}) {
 	if (plainMode) {
 		const preview = args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '';
-		console.log(preview ? `Tool: ${name} - ${preview}` : `Tool: ${name}`);
+		console.log(scrubPlain(preview ? `Tool: ${name} - ${preview}` : `Tool: ${name}`));
 		stepOpen = true;
 		return;
 	}
@@ -337,8 +355,8 @@ export function writeToolResult(_name, ok, preview) {
 	if (plainMode) {
 		const mark = ok === false ? 'failed' : 'ok';
 		const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 5);
-		console.log(lines.length ? `Result: ${mark} - ${lines[0]}` : `Result: ${mark}`);
-		for (const l of lines.slice(1)) console.log(`  ${l}`);
+		console.log(scrubPlain(lines.length ? `Result: ${mark} - ${lines[0]}` : `Result: ${mark}`));
+		for (const l of lines.slice(1)) console.log(`  ${scrubPlain(l)}`);
 		return;
 	}
 	const mark = ok === false ? `${color.red}✗${color.reset}` : `${color.green}✓${color.reset}`;
@@ -386,7 +404,7 @@ export function writeError(message) {
 
 export function writeStep(label, detail = '') {
 	if (plainMode) {
-		console.log(detail ? `${label} - ${detail}` : label);
+		console.log(scrubPlain(detail ? `${label} - ${detail}` : label));
 		stepOpen = true;
 		return;
 	}
@@ -397,9 +415,9 @@ export function writeStep(label, detail = '') {
 
 export function modelListText(activeModel, installed = []) {
 	if (plainMode) {
-		const rows = [`Active: ${activeModel}`];
+		const rows = [`Active: ${scrubPlain(activeModel)}`];
 		if (!installed.length) rows.push('None installed. Run: ollama pull qwen2.5:3b');
-		else for (const tag of installed) rows.push(tag);
+		else for (const tag of installed) rows.push(scrubPlain(tag));
 		return `\n${box(rows, { label: 'Models' })}\n`;
 	}
 	const rows = [`active ${DOT} ${activeModel}`, ''];
@@ -497,7 +515,8 @@ export function keysText() {
 			'Plain text (/plain)',
 			'The prompt is a normal line. /model asks for a',
 			'number or a model name. Empty Enter cancels.',
-			'Ctrl+C quits the plain prompt.',
+			'Ctrl+C clears the line there too, and quits',
+			'only when that line is already empty.',
 			'Set NO_COLOR to start in plain text next time.',
 		], { label: 'Keys' }),
 		'',

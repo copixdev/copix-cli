@@ -332,7 +332,7 @@ function timeAgo(ts) {
 
 function ok(msg) {
 	if (ui.isPlain()) {
-		console.log(`\n${msg}\n`);
+		console.log(`\n${ui.scrubPlain(msg)}\n`);
 		return;
 	}
 	console.log(`\n${ui.color.green}⬢${ui.color.reset} ${msg}\n`);
@@ -340,7 +340,7 @@ function ok(msg) {
 
 function info(msg) {
 	if (ui.isPlain()) {
-		console.log(`\n${msg}\n`);
+		console.log(`\n${ui.scrubPlain(msg)}\n`);
 		return;
 	}
 	console.log(`\n${ui.color.muted}${msg}${ui.color.reset}\n`);
@@ -348,7 +348,7 @@ function info(msg) {
 
 function warn(msg) {
 	if (ui.isPlain()) {
-		console.log(`\nWarning: ${msg}\n`);
+		console.log(`\nWarning: ${ui.scrubPlain(msg)}\n`);
 		return;
 	}
 	console.log(`\n${ui.color.yellow}⬢ ${msg}${ui.color.reset}\n`);
@@ -556,7 +556,10 @@ async function repl(deps) {
 					const turns = Math.floor(s.messages.length / 2);
 					return `${ui.color.accent}⬢${ui.color.reset} ${s.title || '(untitled)'}  ${ui.color.muted}· ${origin} · ${turns} turn${turns === 1 ? '' : 's'} · ${timeAgo(s.updatedAt ?? s.createdAt ?? Date.now())}${ui.color.reset}`;
 				});
-			console.log(`\n${rows.join('\n')}\n${ui.color.muted}Synced with Copix Desktop via ${copixPaths().sessions}${ui.color.reset}\n`);
+			const sessionLines = `${rows.join('\n')}\nSynced with Copix Desktop via ${copixPaths().sessions}`;
+			console.log(ui.isPlain()
+				? `\n${ui.scrubPlain(sessionLines)}\n`
+				: `\n${rows.join('\n')}\n${ui.color.muted}Synced with Copix Desktop via ${copixPaths().sessions}${ui.color.reset}\n`);
 			continue;
 		}
 

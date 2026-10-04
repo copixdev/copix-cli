@@ -1,7 +1,8 @@
 /**
  * Interactive prompt box with slash-command menu (Cursor Agent style).
  * Raw-mode line editor: type inside the rectangle, `/` opens the menu,
- * ↑/↓ navigate, Tab completes, Enter submits, Ctrl+C cancels.
+ * ↑/↓ navigate, Tab completes, Enter submits.
+ * Ctrl+C clears the line and quits only when the line is already empty.
  */
 import readline from 'node:readline';
 import { color, displayWidth, fitLine, isPlain, stripAnsi, termCols } from './ui.js';
@@ -59,7 +60,15 @@ function readPlainPrompt({ placeholder, footer }) {
 			rl.close();
 			resolve(value);
 		};
-		rl.on('SIGINT', () => done(null));
+		rl.on('SIGINT', () => {
+			// Same rule as the drawn prompt: clear a typed line, quit only when it is empty.
+			if (rl.line && rl.line.length > 0) {
+				if (typeof rl._moveCursor === 'function') rl._moveCursor(Infinity);
+				if (typeof rl._deleteLineLeft === 'function') rl._deleteLineLeft();
+				return;
+			}
+			done(null);
+		});
 		rl.on('close', () => done(null));
 		rl.question('> ', (answer) => done(String(answer ?? '').trim()));
 	});
