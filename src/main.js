@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installNodeCopixApi } from './nodeApi.js';
 import * as ui from './ui.js';
 import { readPrompt } from './input.js';
+import { initialModelIndex, modelChoices, resolveModelChoice, selectOption } from './select.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_SRC = path.resolve(__dirname, '../agent');
@@ -294,6 +295,15 @@ async function runOne({
 }
 
 function footerLines({ model, workspace, filesEdited }) {
+	if (ui.isPlain()) {
+		const files = filesEdited > 0
+			? `, ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited`
+			: '';
+		return [
+			`Agent, ollama/${model}${files}`,
+			`Commands: /help, /keys, /plain, /model. Workspace: ${workspace}`,
+		];
+	}
 	const dot = ` ${ui.color.muted}·${ui.color.reset} `;
 	const files = filesEdited > 0
 		? `${dot}${ui.color.muted}${filesEdited} file${filesEdited === 1 ? '' : 's'} edited${ui.color.reset}`
@@ -321,14 +331,26 @@ function timeAgo(ts) {
 }
 
 function ok(msg) {
+	if (ui.isPlain()) {
+		console.log(`\n${msg}\n`);
+		return;
+	}
 	console.log(`\n${ui.color.green}⬢${ui.color.reset} ${msg}\n`);
 }
 
 function info(msg) {
+	if (ui.isPlain()) {
+		console.log(`\n${msg}\n`);
+		return;
+	}
 	console.log(`\n${ui.color.muted}${msg}${ui.color.reset}\n`);
 }
 
 function warn(msg) {
+	if (ui.isPlain()) {
+		console.log(`\nWarning: ${msg}\n`);
+		return;
+	}
 	console.log(`\n${ui.color.yellow}⬢ ${msg}${ui.color.reset}\n`);
 }
 
@@ -366,6 +388,26 @@ async function repl(deps) {
 		session = newCliSession(workspaceRoot);
 	}
 
+	async function applyModelChoice(choice) {
+		const installed = await installedTags(api);
+		const resolved = resolveModelChoice(choice, installed);
+		if (resolved.selection === 'auto') {
+			settings.model.selection = 'auto';
+			await persistSettings();
+			ok(`Model selection → auto ${ui.color.muted}(routes by task, prefers installed tags)${ui.color.reset}`);
+			return;
+		}
+		settings.model.selection = 'manual';
+		settings.model.modelId = resolved.modelId;
+		await persistSettings();
+		lastModel = resolved.modelId;
+		if (resolved.missing) {
+			warn(`Model set to ${resolved.modelId}, but it is not installed — run /pull ${resolved.modelId}`);
+		} else {
+			ok(`Model → ${resolved.modelId} ${ui.color.muted}(manual, saved to settings.json)${ui.color.reset}`);
+		}
+	}
+
 	await printBannerNow();
 
 	while (true) {
@@ -385,6 +427,30 @@ async function repl(deps) {
 
 		if (cmd === '/help' || cmd === '/?') {
 			console.log(ui.helpText());
+			continue;
+		}
+
+		if (cmd === '/keys') {
+			console.log(ui.keysText());
+			continue;
+		}
+
+		if (cmd === '/plain') {
+			const mode = arg.toLowerCase();
+			let next;
+			if (!arg) next = !ui.isPlain();
+			else if (mode === 'on') next = true;
+			else if (mode === 'off') next = false;
+			else {
+				warn('Usage: /plain [on|off]');
+				continue;
+			}
+			ui.setPlain(next);
+			if (next) {
+				console.log('\nPlain text is on. Colors, boxes, and decorative symbols stay off until you run /plain off.\n');
+			} else {
+				ok('Plain text is off.');
+			}
 			continue;
 		}
 
@@ -408,27 +474,29 @@ async function repl(deps) {
 
 		if (cmd === '/model') {
 			if (!arg) {
-				console.log(ui.modelListText(modelLabel(settings), await installedTags(api)));
-				info('Switch with /model <tag> · back to routing with /model auto');
+				const installed = await installedTags(api);
+				const items = modelChoices({
+					installed,
+					selection: settings.model.selection,
+					modelId: settings.model.modelId,
+				});
+				const picked = await selectOption({
+					label: 'Model',
+					items,
+					initialIndex: initialModelIndex(items, settings.model),
+				});
+				if (picked.item) await applyModelChoice(picked.item.value);
+				else if (picked.reason === 'unavailable') {
+					console.log(ui.modelListText(modelLabel(settings), installed));
+					info('Switch with /model <tag> · back to routing with /model auto');
+				} else if (picked.reason === 'invalid') {
+					warn('No matching model. The current model was kept.');
+				} else {
+					info('Model unchanged.');
+				}
 				continue;
 			}
-			if (arg === 'auto') {
-				settings.model.selection = 'auto';
-				await persistSettings();
-				ok(`Model selection → auto ${ui.color.muted}(routes by task, prefers installed tags)${ui.color.reset}`);
-				continue;
-			}
-			const tag = arg.replace(/^ollama\//, '');
-			const installed = await installedTags(api);
-			settings.model.selection = 'manual';
-			settings.model.modelId = tag;
-			await persistSettings();
-			lastModel = tag;
-			if (installed.length && !installed.some((m) => m === tag || m.startsWith(`${tag.split(':')[0]}:`))) {
-				warn(`Model set to ${tag}, but it is not installed — run /pull ${tag}`);
-			} else {
-				ok(`Model → ${tag} ${ui.color.muted}(manual, saved to settings.json)${ui.color.reset}`);
-			}
+			await applyModelChoice(arg);
 			continue;
 		}
 
