@@ -13,10 +13,15 @@ import { readPrompt } from './input.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_SRC = path.resolve(__dirname, '../agent');
 const FALLBACK_MODEL = 'qwen2.5:3b';
-const INSTALL_HINT =
-	process.platform === 'win32'
-		? 'irm https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.ps1 | iex'
-		: 'curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash';
+
+function copixPaths() {
+	const dir = path.join(os.homedir(), 'Copix');
+	return {
+		dir,
+		settings: path.join(dir, 'settings.json'),
+		sessions: path.join(dir, 'sessions.json'),
+	};
+}
 
 function parseArgs(argv) {
 	const opts = {
@@ -295,7 +300,7 @@ function footerLines({ model, workspace, filesEdited }) {
 		: '';
 	return [
 		`${ui.color.accent}◉${ui.color.reset} Agent${dot}${ui.color.muted}ollama/${model}${ui.color.reset}${files}`,
-		`${ui.color.muted}/ commands  ·  ↑↓ select  ·  tab complete  ·  ${workspace}${ui.color.reset}`,
+		`${ui.color.muted}/ commands  ·  ↑↓ history  ·  tab complete  ·  ${workspace}${ui.color.reset}`,
 	];
 }
 
@@ -337,6 +342,7 @@ async function repl(deps) {
 	let lastModel = settings.model.modelId;
 	let filesEdited = 0;
 	let session = newCliSession(workspaceRoot);
+	const promptHistory = [];
 
 	async function persistSettings() {
 		rawSettings = { ...rawSettings, model: { ...rawSettings.model, ...settings.model } };
@@ -365,9 +371,12 @@ async function repl(deps) {
 	while (true) {
 		const line = await readPrompt({
 			footer: footerLines({ model: lastModel, workspace: workspaceRoot, filesEdited }),
+			history: promptHistory,
 		});
 		if (line === null) break;
 		if (!line) continue;
+		if (promptHistory[promptHistory.length - 1] !== line) promptHistory.push(line);
+		if (promptHistory.length > 100) promptHistory.shift();
 
 		const [cmd, ...rest] = line.split(/\s+/);
 		const arg = rest.join(' ').trim();
@@ -451,7 +460,8 @@ async function repl(deps) {
 				`installed  ${models.length ? models.join(', ') : '(none)'}`,
 				`workspace  ${workspaceRoot}`,
 				`history    ${history.length / 2 | 0} turn${history.length === 2 ? '' : 's'} this session`,
-				`settings   ~/Copix/settings.json · sessions ~/Copix/sessions.json`,
+				`settings   ${copixPaths().settings}`,
+				`sessions   ${copixPaths().sessions}`,
 			].join('\n'));
 			continue;
 		}
@@ -478,7 +488,7 @@ async function repl(deps) {
 					const turns = Math.floor(s.messages.length / 2);
 					return `${ui.color.accent}⬢${ui.color.reset} ${s.title || '(untitled)'}  ${ui.color.muted}· ${origin} · ${turns} turn${turns === 1 ? '' : 's'} · ${timeAgo(s.updatedAt ?? s.createdAt ?? Date.now())}${ui.color.reset}`;
 				});
-			console.log(`\n${rows.join('\n')}\n${ui.color.muted}Synced with Copix Desktop via ~/Copix/sessions.json${ui.color.reset}\n`);
+			console.log(`\n${rows.join('\n')}\n${ui.color.muted}Synced with Copix Desktop via ${copixPaths().sessions}${ui.color.reset}\n`);
 			continue;
 		}
 
@@ -530,8 +540,7 @@ async function repl(deps) {
 async function runDoctor(api, version, workspaceRoot) {
 	const nodeOk = Number(process.versions.node.split('.')[0]) >= 18;
 	const agentOk = fs.existsSync(path.join(AGENT_SRC, 'models/router.ts'));
-	const settingsPath = path.join(os.homedir(), 'Copix', 'settings.json');
-	const sessionsPath = path.join(os.homedir(), 'Copix', 'sessions.json');
+	const { settings: settingsPath, sessions: sessionsPath } = copixPaths();
 	const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
 	const models = Array.isArray(status?.models) ? status.models : [];
 	const rows = [
@@ -545,9 +554,9 @@ async function runDoctor(api, version, workspaceRoot) {
 		`✓ Workspace ${workspaceRoot}`,
 		'',
 		'No account required — Desktop and CLI are local-only.',
-		`Reinstall: ${INSTALL_HINT}`,
+		'Reinstall: the command below',
 	];
-	console.log(`\n${ui.boxDoctor(rows)}\n`);
+	console.log(`\n${ui.boxDoctor(rows)}\n${ui.cliInstallCommand()}\n`);
 	if (!nodeOk || !agentOk || !status?.online || !models.length) {
 		process.exitCode = 1;
 	}
@@ -566,7 +575,7 @@ export async function main(argv) {
 	}
 
 	if (!fs.existsSync(path.join(AGENT_SRC, 'models/router.ts'))) {
-		throw new Error(`Standalone agent missing at ${AGENT_SRC}. Re-run: ${INSTALL_HINT}`);
+		throw new Error(`Standalone agent missing at ${AGENT_SRC}. Re-run: ${ui.cliInstallCommand()}`);
 	}
 
 	const deps = await loadAgentModules();
@@ -597,24 +606,33 @@ export async function main(argv) {
 		});
 		ui.beginUser(opts.prompt);
 		const session = newCliSession(workspaceRoot);
-		const turn = await runOne({
-			prompt: opts.prompt,
-			workspaceRoot,
-			history: [],
-			runAgent: deps.runAgent,
-			resolveModelConfig: deps.resolveModelConfig,
-			api: deps.api,
-			settings,
-			installedModels,
-		});
-		recordTurn(session, opts.prompt, turn.assistantText);
-		session.workspaceRoot = turn.workspaceRoot;
-		await persistSession(deps.api, session);
-		ui.printFooter({
-			model: `ollama/${turn.model}`,
-			mode: 'Agent',
-			filesEdited: turn.filesEdited,
-		});
+		try {
+			const turn = await runOne({
+				prompt: opts.prompt,
+				workspaceRoot,
+				history: [],
+				runAgent: deps.runAgent,
+				resolveModelConfig: deps.resolveModelConfig,
+				api: deps.api,
+				settings,
+				installedModels,
+			});
+			recordTurn(session, opts.prompt, turn.assistantText);
+			session.workspaceRoot = turn.workspaceRoot;
+			await persistSession(deps.api, session);
+			ui.printFooter({
+				model: `ollama/${turn.model}`,
+				mode: 'Agent',
+				filesEdited: turn.filesEdited,
+				workspace: turn.workspaceRoot,
+			});
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			ui.writeError(message);
+			recordTurn(session, opts.prompt, `Error: ${message}`);
+			await persistSession(deps.api, session);
+			process.exitCode = 1;
+		}
 		return;
 	}
 

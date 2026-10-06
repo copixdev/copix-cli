@@ -39,6 +39,8 @@ copix -p ~/sites "add a landing page"
 copix doctor                  # Node · Ollama · models · paths
 ```
 
+In the prompt, ↑ and ↓ recall earlier lines. Tab completes a slash command. Ctrl+C clears the line; Ctrl+C on an empty line quits. `/status` and `/doctor` print the settings and sessions paths for this machine. `/help` shows the install command and the settings path in that OS's usual form (`~/Copix` on macOS and Linux, `%USERPROFILE%\Copix` on Windows).
+
 ### Slash commands
 
 | Command | Action |

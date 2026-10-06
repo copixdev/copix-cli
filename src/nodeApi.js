@@ -11,7 +11,14 @@ import path from 'node:path';
 const COPIX_DIR = path.join(os.homedir(), 'Copix');
 const SETTINGS_PATH = path.join(COPIX_DIR, 'settings.json');
 
-function expandWorkspaceHome(raw, userHome) {
+/** Users-directory prefix for a mistaken `/user/...` path. macOS and Windows differ; Linux does too. */
+export function usersDirectoryPrefix(platform = process.platform) {
+	if (platform === 'win32') return 'C:/Users/';
+	if (platform === 'linux') return '/home/';
+	return '/Users/';
+}
+
+export function expandWorkspaceHome(raw, userHome) {
 	let home = raw?.trim() ?? '';
 	if (!home || /copix-output/i.test(home.replace(/\\/g, '/'))) {
 		return path.normalize(userHome);
@@ -23,9 +30,16 @@ function expandWorkspaceHome(raw, userHome) {
 	if (home.startsWith('~')) {
 		home = path.join(userHome, home.slice(1).replace(/^[/\\]+/, ''));
 	}
-	// Normalize mistaken /user/{name} → real OS home layout
-	home = home.replace(/^\/user\//i, process.platform === 'linux' ? '/home/' : '/Users/');
+	// Normalize a mistaken /user/{name} prefix to this OS's users directory.
+	home = home.replace(/^\/user\//i, usersDirectoryPrefix());
 	return path.normalize(home);
+}
+
+function elevationNote() {
+	if (process.platform === 'win32') {
+		return 'Copix CLI does not show a UAC prompt. Run this command in an elevated PowerShell if it needs Administrator.';
+	}
+	return 'Copix CLI does not show an administrator prompt. Run this command with sudo if it needs it.';
 }
 
 const DEFAULT_SETTINGS = {
@@ -136,6 +150,54 @@ async function listTree(dir, max = 400) {
 	}
 	await walk(dir, 0);
 	return out.sort();
+}
+
+async function grepFiles(pattern, root) {
+	let re;
+	try {
+		re = new RegExp(pattern);
+	} catch {
+		re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+	}
+	const matches = [];
+	const max = 80;
+	async function walk(dir, depth) {
+		if (matches.length >= max || depth > 8) return;
+		let entries;
+		try {
+			entries = await fs.readdir(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			if (matches.length >= max) break;
+			if (e.name.startsWith('.') || e.name === 'node_modules' || e.name === 'Library') continue;
+			const full = path.join(dir, e.name);
+			if (e.isDirectory()) {
+				await walk(full, depth + 1);
+				continue;
+			}
+			if (!e.isFile() || isSensitive(full)) continue;
+			let text;
+			try {
+				const stat = await fs.stat(full);
+				if (stat.size > 1_000_000) continue;
+				text = await fs.readFile(full, 'utf8');
+			} catch {
+				continue;
+			}
+			if (text.includes('\0')) continue;
+			const lines = text.split(/\r?\n/);
+			for (let i = 0; i < lines.length && matches.length < max; i++) {
+				re.lastIndex = 0;
+				if (!re.test(lines[i])) continue;
+				const rel = path.relative(root, full).replace(/\\/g, '/');
+				matches.push(`${rel}:${i + 1}:${lines[i].trim().slice(0, 200)}`);
+			}
+		}
+	}
+	await walk(root, 0);
+	return matches.length ? matches.join('\n') : 'No matches found';
 }
 
 async function gitInit(dir) {
@@ -293,14 +355,14 @@ export function createNodeCopixApi() {
 		},
 		grep: async (pattern, searchPath, workspaceRoot) => {
 			const root = searchPath ? resolvePath(searchPath, workspaceRoot) : (workspaceRoot || process.cwd());
-			return runProcess(
-				`rg --no-heading --line-number --max-count 80 ${JSON.stringify(pattern)} ${JSON.stringify(root)} || true`,
-				workspaceRoot || process.cwd(),
-			);
+			if (!fsSync.existsSync(root)) return `No such path: ${root}`;
+			return grepFiles(String(pattern || ''), root);
 		},
-		runTerminal: async (cmd, workspaceRoot, cwd, _elevate, streamId) => {
+		runTerminal: async (cmd, workspaceRoot, cwd, elevate, streamId) => {
 			const workDir = cwd ? resolvePath(cwd, workspaceRoot) : (workspaceRoot || process.cwd());
-			return runProcess(String(cmd || ''), workDir, streamId);
+			const result = await runProcess(String(cmd || ''), workDir, streamId);
+			if (!elevate) return result;
+			return `${result}\n${elevationNote()}`;
 		},
 		onTerminalOutput: (streamId, cb) => {
 			if (!terminalListeners.has(streamId)) terminalListeners.set(streamId, new Set());
@@ -352,8 +414,14 @@ export function createNodeCopixApi() {
 			await fs.writeFile(path.join(COPIX_DIR, 'sessions.json'), json, 'utf8');
 		},
 		openExternal: async (url) => {
-			const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-			spawn(opener, [url], { shell: true, detached: true }).unref();
+			const target = String(url || '');
+			// `start` is a cmd builtin; the first quoted argument is a window title, so pass an empty title.
+			if (process.platform === 'win32') {
+				spawn('cmd.exe', ['/c', 'start', '', target], { detached: true, windowsHide: true }).unref();
+				return;
+			}
+			const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
+			spawn(opener, [target], { detached: true }).unref();
 		},
 		openIdeWindow: async () => ({ ok: false, message: 'IDE window is desktop-only' }),
 		getServerStatus: async () => {

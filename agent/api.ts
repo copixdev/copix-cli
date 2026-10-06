@@ -17,9 +17,15 @@ function resolveCopixApi(): CopixApi | undefined {
 	return g.copix ?? g.window?.copix;
 }
 
+function installCommand(): string {
+	if (typeof process !== 'undefined' && process.platform === 'win32') {
+		return 'irm https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.ps1 | iex';
+	}
+	return 'curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash';
+}
+
 function missingCopixApi(): never {
-	const msg =
-		'Copix API unavailable — reinstall the CLI: curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash  (Windows: irm .../cli/install.ps1 | iex)';
+	const msg = `Copix API unavailable — reinstall the CLI: ${installCommand()}`;
 	console.error('[copix]', msg);
 	throw new Error(msg);
 }
@@ -29,7 +35,8 @@ export const copix: CopixApi = new Proxy({} as CopixApi, {
 	get(_target, prop, receiver) {
 		const api = resolveCopixApi();
 		if (!api) {
-			if (prop === 'platform') return 'darwin';
+			// Do not pretend the host is macOS. Callers that need a platform
+			// fall through to process.platform when this throws or is not a string.
 			return () => missingCopixApi();
 		}
 		const value = Reflect.get(api, prop, receiver);

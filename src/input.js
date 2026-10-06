@@ -3,36 +3,12 @@
  * Raw-mode line editor: type inside the rectangle, `/` opens the menu,
  * ↑/↓ navigate, Tab completes, Enter submits, Ctrl+C cancels.
  */
-import { color } from './ui.js';
+import { color, displayWidth, fitLine, termCols } from './ui.js';
 
 const ESC = '\x1b[';
 
 function cols() {
-	return Math.max(52, Math.min(process.stdout.columns || 80, 88));
-}
-
-function stripAnsi(s) {
-	return String(s).replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-/** Approximate display width (CJK counts as 2). */
-function charWidth(ch) {
-	const code = ch.codePointAt(0) ?? 0;
-	if (
-		(code >= 0x1100 && code <= 0x115f)
-		|| (code >= 0x2e80 && code <= 0xa4cf)
-		|| (code >= 0xac00 && code <= 0xd7a3)
-		|| (code >= 0xf900 && code <= 0xfaff)
-		|| (code >= 0xff00 && code <= 0xff60)
-		|| (code >= 0xffe0 && code <= 0xffe6)
-	) return 2;
-	return 1;
-}
-
-function displayWidth(s) {
-	let w = 0;
-	for (const ch of stripAnsi(s)) w += charWidth(ch);
-	return w;
+	return termCols();
 }
 
 function padToWidth(s, width) {
@@ -63,9 +39,10 @@ function filteredCommands(buffer) {
 
 /**
  * Read one line inside a drawn box. Returns the submitted string,
- * or null on Ctrl+C / Ctrl+D with empty buffer.
+ * or null on Ctrl+D / Ctrl+C with an empty buffer.
+ * Ctrl+C with text clears the line. ↑/↓ recall `history` when the slash menu is closed.
  */
-export function readPrompt({ placeholder = 'Ask, plan, build anything', footer = [] } = {}) {
+export function readPrompt({ placeholder = 'Ask, plan, build anything', footer = [], history = [] } = {}) {
 	return new Promise((resolve) => {
 		const stdin = process.stdin;
 		const stdout = process.stdout;
@@ -73,6 +50,8 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 		let cursor = 0;
 		let menuIndex = 0;
 		let renderedLines = 0;
+		let historyIndex = history.length;
+		let draft = '';
 
 		const wasRaw = stdin.isRaw;
 		if (stdin.isTTY) stdin.setRawMode(true);
@@ -121,10 +100,10 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 					const mark = sel ? `${color.accent}→${color.reset}` : ' ';
 					const label = `${m.cmd}${m.args ? ` ${m.args}` : ''}`;
 					const cmd = sel ? `${color.bold}${label}${color.reset}` : label;
-					lines.push(`${mark} ${padToWidth(cmd, 22)} ${color.muted}${m.desc}${color.reset}`);
+					lines.push(fitLine(`${mark} ${padToWidth(cmd, 22)} ${color.muted}${m.desc}${color.reset}`, width));
 				}
 			} else if (!final) {
-				for (const f of footer) lines.push(f);
+				for (const f of footer) lines.push(fitLine(f, width));
 			}
 
 			// repaint block in place
@@ -156,7 +135,16 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 			const s = chunk.toString('utf8');
 			const menu = filteredCommands(buffer);
 
-			if (s === '\x03') { // Ctrl+C
+			if (s === '\x03') { // Ctrl+C — clear the line; quit only when it is already empty
+				if (buffer) {
+					buffer = '';
+					cursor = 0;
+					menuIndex = 0;
+					historyIndex = history.length;
+					draft = '';
+					render();
+					return;
+				}
 				finish(null);
 				return;
 			}
@@ -191,33 +179,54 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				render();
 				return;
 			}
-			if (s === `${ESC}A`) { // up
+			if (s === `${ESC}A` || s === '\x1bOA') { // up — menu, or earlier prompt
 				if (menu.length) menuIndex = (menuIndex - 1 + menu.length) % menu.length;
+				else if (history.length && historyIndex > 0) {
+					if (historyIndex === history.length) draft = buffer;
+					historyIndex -= 1;
+					buffer = history[historyIndex] ?? '';
+					cursor = buffer.length;
+				}
 				render();
 				return;
 			}
-			if (s === `${ESC}B`) { // down
+			if (s === `${ESC}B` || s === '\x1bOB') { // down
 				if (menu.length) menuIndex = (menuIndex + 1) % menu.length;
+				else if (historyIndex < history.length) {
+					historyIndex += 1;
+					buffer = historyIndex === history.length ? draft : (history[historyIndex] ?? '');
+					cursor = buffer.length;
+				}
 				render();
 				return;
 			}
-			if (s === `${ESC}D`) { // left
+			if (s === `${ESC}D` || s === '\x1bOD') { // left
 				cursor = Math.max(0, cursor - 1);
 				render();
 				return;
 			}
-			if (s === `${ESC}C`) { // right
+			if (s === `${ESC}C` || s === '\x1bOC') { // right
 				cursor = Math.min(buffer.length, cursor + 1);
 				render();
 				return;
 			}
-			if (s === `${ESC}H` || s === '\x01') { cursor = 0; render(); return; }
-			if (s === `${ESC}F` || s === '\x05') { cursor = buffer.length; render(); return; }
+			if (s === `${ESC}H` || s === '\x01' || s === `${ESC}1~`) { cursor = 0; render(); return; }
+			if (s === `${ESC}F` || s === '\x05' || s === `${ESC}4~`) { cursor = buffer.length; render(); return; }
+			if (s === `${ESC}3~`) { // delete
+				if (cursor < buffer.length) {
+					buffer = buffer.slice(0, cursor) + buffer.slice(cursor + 1);
+					menuIndex = 0;
+					historyIndex = history.length;
+				}
+				render();
+				return;
+			}
 			if (s === '\x7f' || s === '\b') { // backspace
 				if (cursor > 0) {
 					buffer = buffer.slice(0, cursor - 1) + buffer.slice(cursor);
 					cursor--;
 					menuIndex = 0;
+					historyIndex = history.length;
 				}
 				render();
 				return;
@@ -226,6 +235,8 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				buffer = '';
 				cursor = 0;
 				menuIndex = 0;
+				historyIndex = history.length;
+				draft = '';
 				render();
 				return;
 			}
@@ -237,6 +248,7 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				buffer = buffer.slice(0, cursor) + clean + buffer.slice(cursor);
 				cursor += clean.length;
 				menuIndex = 0;
+				historyIndex = history.length;
 				render();
 			}
 		}

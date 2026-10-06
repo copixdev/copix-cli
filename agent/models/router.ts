@@ -343,7 +343,9 @@ Run a **local shell command** on the user's machine (${shellLabel()}). Output st
 						type: 'boolean',
 						description: isWindows()
 							? 'Run elevated as Administrator (Windows UAC prompt)'
-							: 'Run elevated with administrator privileges (macOS auth prompt / sudo)',
+							: isMac()
+								? 'Run elevated with administrator privileges (macOS auth prompt / sudo)'
+								: 'Run elevated with administrator privileges (sudo)',
 					},
 				},
 				required: ['command'],
