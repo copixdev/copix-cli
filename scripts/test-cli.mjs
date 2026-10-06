@@ -30,9 +30,11 @@ import {
 	printBanner,
 	renderReply,
 	setPlain,
+	repaintFrame,
 	startCardLines,
 	statusText,
 	termCols,
+	wrappedRowCount,
 } from '../src/ui.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -72,10 +74,21 @@ function visibleScreen(input) {
 				const mode = args[0] ?? 0;
 				if (mode === 2) lines[row] = '';
 				else lines[row] = [...lines[row]].slice(0, col).join('');
-			} else if (cmd === 'H') {
+			} 			else if (cmd === 'H') {
 				row = Math.max(0, (args[0] || 1) - 1);
 				col = Math.max(0, (args[1] || 1) - 1);
 				ensure(row);
+			} else if (cmd === 'J') {
+				const mode = args[0] ?? 0;
+				if (mode === 2) {
+					lines.splice(0, lines.length, '');
+					row = 0;
+					col = 0;
+				} else if (mode === 0) {
+					ensure(row);
+					lines[row] = [...lines[row]].slice(0, col).join('');
+					lines.splice(row + 1);
+				}
 			}
 			continue;
 		}
@@ -362,7 +375,65 @@ test('plain answers match a number or a model name', () => {
 	assert.equal(matchChoice(items, 'nope'), null);
 });
 
+function reflowLines(lines, columns) {
+	const cols = Math.max(1, columns);
+	const rows = [];
+	for (const line of lines) {
+		const text = stripAnsi(line);
+		if (displayWidth(text) === 0) {
+			rows.push('');
+			continue;
+		}
+		let row = '';
+		let width = 0;
+		for (const ch of text) {
+			const dw = displayWidth(ch);
+			if (row && width + dw > cols) {
+				rows.push(row);
+				row = ch;
+				width = dw;
+			} else {
+				row += ch;
+				width += dw;
+			}
+		}
+		if (row) rows.push(row);
+	}
+	return rows;
+}
+
+test('narrowing resize erases the rewrapped prompt before redrawing', () => {
+	const oldWidth = 100;
+	const nextWidth = 60;
+	const oldLines = [
+		`╭${'─'.repeat(oldWidth - 2)}╮`,
+		`│ ${'OLDFRAME'.padEnd(oldWidth - 4, ' ')} │`,
+		`╰${'─'.repeat(oldWidth - 2)}╯`,
+		`${'x'.repeat(oldWidth)}`,
+	];
+	const nextLines = [
+		`╭${'─'.repeat(nextWidth - 2)}╮`,
+		`│ ${'NEWFRAME'.padEnd(nextWidth - 4, ' ')} │`,
+		`╰${'─'.repeat(nextWidth - 2)}╯`,
+	];
+	assert.equal(displayWidth(oldLines[0]), oldWidth);
+	assert.equal(wrappedRowCount(oldLines, nextWidth), oldLines.length * 2);
+	assert.equal(wrappedRowCount([`\x1b[1m${'あ'.repeat(3)}\x1b[0m`], 4), 2);
+	assert.equal(wrappedRowCount([''], 60), 1);
+
+	let emitted = '';
+	repaintFrame((chunk) => { emitted += chunk; }, oldLines, nextLines, nextWidth);
+	assert.match(emitted, new RegExp(`^\\x1b\\[${wrappedRowCount(oldLines, nextWidth)}A\\x1b\\[J`));
+
+	const reflowed = reflowLines(oldLines, nextWidth);
+	const screen = visibleScreen(`${reflowed.join('\n')}\n${emitted}`);
+	assert.equal(screen.split('╭').length - 1, 1, screen);
+	assert.match(screen, /NEWFRAME/);
+	assert.doesNotMatch(screen, /OLDFRAME/);
+});
+
 test('picker window follows the highlighted row', () => {
+	setPlain(false);
 	assert.deepEqual(pickerWindow(4, 2, 9), { start: 0, end: 4 });
 	assert.deepEqual(pickerWindow(20, 0, 9), { start: 0, end: 9 });
 	assert.deepEqual(pickerWindow(20, 19, 9), { start: 11, end: 20 });
@@ -377,6 +448,43 @@ test('picker window follows the highlighted row', () => {
 	assert.match(plain, /✓/);
 	assert.doesNotMatch(plain, /▸\s+1\s+auto/);
 	assert.match(plain, /enter select/);
+	const autoRow = lines.split('\n').find((line) => /\s1\s+auto/.test(stripAnsi(line)));
+	const qwenRow = lines.split('\n').find((line) => /qwen2\.5:3b/.test(stripAnsi(line)) && !/coder/.test(stripAnsi(line)));
+	assert.doesNotMatch(autoRow, /\x1b\[1m/);
+	assert.match(stripAnsi(autoRow), /✓/);
+	assert.match(qwenRow, /\x1b\[1m/);
+	assert.doesNotMatch(stripAnsi(qwenRow), /✓/);
+});
+
+test('picker cursor is the only bold clay row', () => {
+	const prev = process.env.COLORTERM;
+	process.env.COLORTERM = 'truecolor';
+	setPlain(false);
+	try {
+		const items = modelChoices({ installed: ['qwen2.5:3b'], selection: 'manual', modelId: 'qwen2.5:3b' });
+		const parked = renderPickerLines({ label: 'Model', items, index: 0 });
+		const auto = parked.find((line) => /\s1\s+auto/.test(stripAnsi(line)));
+		const qwen = parked.find((line) => /qwen2\.5:3b/.test(stripAnsi(line)) && !/coder/.test(stripAnsi(line)));
+		assert.match(auto, /▸/);
+		assert.match(auto, /\x1b\[1m/);
+		assert.match(auto, /38;2;196;101;74m/);
+		assert.doesNotMatch(stripAnsi(auto), /✓/);
+		assert.doesNotMatch(qwen, /▸/);
+		assert.doesNotMatch(qwen, /\x1b\[1m/);
+		assert.doesNotMatch(qwen, /38;2;196;101;74m/);
+		assert.match(qwen, /38;2;110;127;98m✓/);
+
+		const onActive = renderPickerLines({ label: 'Model', items, index: 1 });
+		const current = onActive.find((line) => /▸/.test(stripAnsi(line)));
+		assert.match(stripAnsi(current), /qwen2\.5:3b/);
+		assert.match(current, /\x1b\[1m/);
+		assert.match(current, /38;2;196;101;74m/);
+		assert.match(current, /38;2;110;127;98m✓/);
+	} finally {
+		if (prev === undefined) delete process.env.COLORTERM;
+		else process.env.COLORTERM = prev;
+		setPlain(false);
+	}
 });
 
 test('selectOption does not open a picker when there is no terminal', async () => {

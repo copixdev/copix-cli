@@ -181,6 +181,31 @@ export function fitLine(s, width) {
 	return `${out}…${color.reset}`;
 }
 
+/**
+ * Physical rows a previously drawn frame occupies after the terminal reflows
+ * it to `columns`. Each old line takes ceil(visibleWidth / columns) rows, at least 1.
+ */
+export function wrappedRowCount(lines, columns) {
+	const cols = Math.max(1, Number(columns) || 1);
+	let rows = 0;
+	for (const line of lines) {
+		const width = displayWidth(line);
+		rows += Math.max(1, Math.ceil(width / cols));
+	}
+	return rows;
+}
+
+/** Move up the reflowed frame, erase through the end of the screen, then draw the next frame. */
+export function repaintFrame(write, previousLines, nextLines, columns) {
+	const prior = previousLines || [];
+	if (prior.length) {
+		const up = wrappedRowCount(prior, columns);
+		write(`${ESC}${up}A${ESC}J`);
+	}
+	for (const line of nextLines) write(`\r${ESC}2K${line}\n`);
+	return nextLines;
+}
+
 function wrapText(text, width) {
 	const raw = String(text ?? '');
 	const limit = Math.max(8, width);

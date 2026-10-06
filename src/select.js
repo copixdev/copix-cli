@@ -3,7 +3,7 @@
  * Raw mode matches the prompt (↑↓, enter, esc). Plain mode asks for a number or name.
  */
 import readline from 'node:readline';
-import { color, isPlain, scrubPlain, termCols } from './ui.js';
+import { color, isPlain, repaintFrame, scrubPlain, termCols, wrappedRowCount } from './ui.js';
 
 const ESC = '\x1b[';
 
@@ -194,8 +194,7 @@ function pickerRow(item, i, selected, inner) {
 		label = truncatePlain(label, room);
 		hint = '';
 	}
-	const emphasize = selected || active;
-	const labelAnsi = emphasize ? `${color.bold}${color.clay}${label}${color.reset}` : label;
+	const labelAnsi = selected ? `${color.bold}${color.clay}${label}${color.reset}` : label;
 	const hintAnsi = hint ? `${gap}${color.hint}${hint}${color.reset}` : '';
 	const mark = selected ? `${color.clay}▸${color.reset}` : ' ';
 	const check = active ? ` ${color.sage}✓${color.reset}` : '';
@@ -258,7 +257,7 @@ function selectRaw({ label, items, initialIndex = 0 }) {
 		const stdin = process.stdin;
 		const stdout = process.stdout;
 		let index = Math.min(Math.max(initialIndex, 0), items.length - 1);
-		let renderedLines = 0;
+		let drawnLines = [];
 		const wasRaw = stdin.isRaw;
 		stdin.setRawMode(true);
 		stdin.resume();
@@ -268,14 +267,12 @@ function selectRaw({ label, items, initialIndex = 0 }) {
 
 		function render() {
 			const lines = renderPickerLines({ label, items, index });
-			if (renderedLines > 0) stdout.write(`${ESC}${renderedLines}A`);
-			for (const line of lines) stdout.write(`\r${ESC}2K${line}\n`);
-			const extra = renderedLines - lines.length;
-			if (extra > 0) {
-				for (let i = 0; i < extra; i++) stdout.write(`\r${ESC}2K\n`);
-				stdout.write(`${ESC}${extra}A`);
-			}
-			renderedLines = lines.length;
+			drawnLines = repaintFrame(
+				(chunk) => stdout.write(chunk),
+				drawnLines,
+				lines,
+				stdout.columns || 80,
+			);
 		}
 
 		let closed = false;
@@ -291,8 +288,8 @@ function selectRaw({ label, items, initialIndex = 0 }) {
 			if (closed) return;
 			closed = true;
 			if (escTimer) clearTimeout(escTimer);
-			eraseBlock((chunk) => stdout.write(chunk), renderedLines);
-			renderedLines = 0;
+			eraseBlock((chunk) => stdout.write(chunk), wrappedRowCount(drawnLines, stdout.columns || 80));
+			drawnLines = [];
 			stdout.write(`${ESC}?25h`);
 			stdout.off('resize', onResize);
 			stdin.removeListener('data', onData);
