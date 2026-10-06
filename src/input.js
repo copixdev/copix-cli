@@ -96,6 +96,8 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 		if (stdin.isTTY) stdin.setRawMode(true);
 		stdin.resume();
 		stdout.write(`${ESC}?25l`); // hide hardware cursor — we draw our own
+		const onResize = () => render();
+		stdout.on('resize', onResize);
 
 		function render(final = false) {
 			const width = cols();
@@ -125,7 +127,7 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				const scrolled = start > 0 ? `${color.muted}…${color.reset}` : '';
 				text = `${scrolled}${before}${ESC}7m${at}${ESC}27m${after}`;
 			}
-			const arrow = `${color.accent}→${color.reset} `;
+			const arrow = `${color.clay}→${color.reset} `;
 			const inputLine = `${color.dim}│${color.reset} ${arrow}${padToWidth(text, Math.max(0, inner - 2))} ${color.dim}│${color.reset}`;
 
 			lines.push(`${color.dim}╭${'─'.repeat(width - 2)}╮${color.reset}`);
@@ -136,9 +138,9 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				for (let i = 0; i < menu.length; i++) {
 					const m = menu[i];
 					const sel = i === menuIndex;
-					const mark = sel ? `${color.accent}→${color.reset}` : ' ';
+					const mark = sel ? `${color.clay}→${color.reset}` : ' ';
 					const label = `${m.cmd}${m.args ? ` ${m.args}` : ''}`;
-					const cmd = sel ? `${color.bold}${label}${color.reset}` : label;
+					const cmd = sel ? `${color.clay}${label}${color.reset}` : label;
 					lines.push(fitLine(`${mark} ${padToWidth(cmd, 22)} ${color.muted}${m.desc}${color.reset}`, width));
 				}
 			} else if (!final) {
@@ -164,6 +166,7 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 		function finish(result) {
 			render(true);
 			stdout.write(`${ESC}?25h`);
+			stdout.off('resize', onResize);
 			stdin.removeListener('data', onData);
 			if (stdin.isTTY) stdin.setRawMode(Boolean(wasRaw));
 			stdin.pause();

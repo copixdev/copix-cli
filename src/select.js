@@ -152,21 +152,36 @@ export function renderPickerLines({ label = 'Select', items = [], index = 0 } = 
 	for (let i = start; i < end; i++) body.push(pickerRow(items[i], i, i === idx, inner));
 	if (end < items.length) body.push(`${color.muted}${items.length - end} more below${color.reset}`);
 
+	if (isPlain()) {
+		const lines = [scrubPlain(String(label || 'Select'))];
+		for (let i = start; i < end; i++) {
+			const item = items[i];
+			const hint = item.hint ? ` - ${scrubPlain(item.hint)}` : '';
+			const active = /\bcurrent\b/.test(String(item.hint || '')) ? ' (active)' : '';
+			lines.push(scrubPlain(`${i + 1}. ${item.label}${active}${hint}`));
+		}
+		lines.push('Enter a number or name. Empty cancels.');
+		return lines;
+	}
+
+	const edge = color.hint;
 	const lines = [
-		`${color.dim}╭${'─'.repeat(width - 2)}╮${color.reset}`,
-		`${color.dim}│${color.reset} ${padToWidth(`${color.muted}${truncatePlain(label, inner)}${color.reset}`, inner)} ${color.dim}│${color.reset}`,
+		`${edge}╭${'─'.repeat(width - 2)}╮${color.reset}`,
+		`${edge}│${color.reset} ${padToWidth(`${color.bold}${truncatePlain(label, inner)}${color.reset}`, inner)} ${edge}│${color.reset}`,
 	];
 	for (const row of body) {
-		lines.push(`${color.dim}│${color.reset} ${padToWidth(row, inner)} ${color.dim}│${color.reset}`);
+		lines.push(`${edge}│${color.reset} ${padToWidth(row, inner)} ${edge}│${color.reset}`);
 	}
-	lines.push(`${color.dim}╰${'─'.repeat(width - 2)}╯${color.reset}`);
-	lines.push(`${color.muted}↑↓ move  ·  1-9 jump  ·  enter select  ·  esc cancel${color.reset}`);
+	lines.push(`${edge}╰${'─'.repeat(width - 2)}╯${color.reset}`);
+	lines.push(`${color.hint}↑↓ move  ·  1-9 jump  ·  enter select  ·  esc cancel${color.reset}`);
 	return lines;
 }
 
 function pickerRow(item, i, selected, inner) {
+	const active = /\bcurrent\b/.test(String(item.hint || ''));
 	const n = String(i + 1).padStart(2, ' ');
-	const fixed = 6;
+	const checkWidth = active ? 2 : 0;
+	const fixed = 6 + checkWidth;
 	const room = Math.max(1, inner - fixed);
 	const gap = '  ';
 	let label = String(item.label);
@@ -179,10 +194,12 @@ function pickerRow(item, i, selected, inner) {
 		label = truncatePlain(label, room);
 		hint = '';
 	}
-	const labelAnsi = selected ? `${color.bold}${label}${color.reset}` : label;
-	const hintAnsi = hint ? `${gap}${color.muted}${hint}${color.reset}` : '';
-	const mark = selected ? `${color.accent}→${color.reset}` : ' ';
-	return `${mark} ${n}  ${labelAnsi}${hintAnsi}`;
+	const emphasize = selected || active;
+	const labelAnsi = emphasize ? `${color.bold}${color.clay}${label}${color.reset}` : label;
+	const hintAnsi = hint ? `${gap}${color.hint}${hint}${color.reset}` : '';
+	const mark = selected ? `${color.clay}▸${color.reset}` : ' ';
+	const check = active ? ` ${color.sage}✓${color.reset}` : '';
+	return `${mark} ${n}  ${labelAnsi}${check}${hintAnsi}`;
 }
 
 function readLine(prompt) {
@@ -246,6 +263,8 @@ function selectRaw({ label, items, initialIndex = 0 }) {
 		stdin.setRawMode(true);
 		stdin.resume();
 		stdout.write(`${ESC}?25l`);
+		const onResize = () => render();
+		stdout.on('resize', onResize);
 
 		function render() {
 			const lines = renderPickerLines({ label, items, index });
@@ -275,6 +294,7 @@ function selectRaw({ label, items, initialIndex = 0 }) {
 			eraseBlock((chunk) => stdout.write(chunk), renderedLines);
 			renderedLines = 0;
 			stdout.write(`${ESC}?25h`);
+			stdout.off('resize', onResize);
 			stdin.removeListener('data', onData);
 			if (stdin.isTTY) stdin.setRawMode(Boolean(wasRaw));
 			stdin.pause();

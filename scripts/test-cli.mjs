@@ -16,7 +16,24 @@ import {
 	selectOption,
 	SUGGESTED_MODELS,
 } from '../src/select.js';
-import { boxDoctor, helpText, isPlain, keysText, printBanner, setPlain } from '../src/ui.js';
+import {
+	boxDoctor,
+	closestAnsi256,
+	formatFileDiff,
+	formatStatusLine,
+	formatToolLine,
+	helpText,
+	isPlain,
+	keysText,
+	modelListText,
+	displayWidth,
+	printBanner,
+	renderReply,
+	setPlain,
+	startCardLines,
+	statusText,
+	termCols,
+} from '../src/ui.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ESC = '\x1b[';
@@ -126,8 +143,9 @@ test('plain mode drops color and boxes without changing the default banner', () 
 		});
 	}).join('\n');
 	assert.match(fancy, /\x1b\[1mCopix/);
-	assert.match(stripAnsi(fancy), /⬢ ollama ready/);
-	assert.match(fancy, /◉/);
+	assert.match(fancy, /▀/);
+	assert.match(stripAnsi(fancy), /ollama/);
+	assert.doesNotMatch(stripAnsi(fancy), /⬢|◉/);
 
 	setPlain(true);
 	try {
@@ -141,9 +159,10 @@ test('plain mode drops color and boxes without changing the default banner', () 
 			});
 		}).join('\n');
 		assert.equal(plain.includes('\x1b'), false);
-		assert.equal(/[╭╮╰╯│⬢◉]/.test(plain), false);
-		assert.match(plain, /Copix agent cli 1\.7\.2/);
-		assert.match(plain, /Ollama: ready \(2 models\)/);
+		assert.equal(/[╭╮╰╯│⬢◉▀▄█▌▐▪▸]/.test(plain), false);
+		assert.match(plain, /Copix 1\.7\.2/);
+		assert.match(plain, /Ollama: ready/);
+		assert.match(plain, /auto - ollama\/qwen2\.5:3b/);
 		const help = helpText();
 		assert.equal(help.includes('\x1b'), false);
 		assert.match(help, /\/keys/);
@@ -153,7 +172,7 @@ test('plain mode drops color and boxes without changing the default banner', () 
 	}
 });
 
-const DECORATIVE = /[·→⬢✓✗]/;
+const DECORATIVE = /[·→⬢✓✗▪▸▀▄█▌▐]/;
 
 test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check marks', () => {
 	setPlain(true);
@@ -184,15 +203,54 @@ test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check mark
 		assert.match(doctor, /ok Node/);
 		assert.match(doctor, /no Ollama/);
 		assert.match(doctor, /-> next/);
+		const surfaces = [
+			startCardLines({ version: '1.7.2', model: 'auto · qwen', workspace: '/tmp', ollamaOk: true }).join('\n'),
+			formatStatusLine({ model: 'auto · qwen', workspace: '/tmp', ollamaOk: false }),
+			formatToolLine({ name: 'edit_file', detail: 'a.js', state: 'run' }),
+			formatToolLine({ name: 'edit_file', detail: 'a.js', state: 'ok' }),
+			formatToolLine({ name: 'edit_file', detail: 'a.js', state: 'fail' }),
+			formatFileDiff('a.js', { preview: '- old\n+ new' }),
+			renderReply('See **name** and `id`.\n```\nconst a = 1;\n```\n'),
+			modelListText('ollama/qwen', ['qwen']),
+			renderPickerLines({
+				label: 'Model',
+				items: modelChoices({ installed: ['qwen'], selection: 'manual', modelId: 'qwen' }),
+				index: 1,
+			}).join('\n'),
+		].join('\n');
+		assert.equal(surfaces.includes('\x1b'), false);
+		assert.doesNotMatch(surfaces, DECORATIVE);
+		assert.match(surfaces, /const a = 1/);
+		assert.match(surfaces, /Result: ok/);
+		assert.match(surfaces, /\(active\)/);
 	} finally {
 		setPlain(false);
 	}
 
 	const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
-		import { isPlain, helpText, keysText } from './src/ui.js';
+		import { isPlain, helpText, keysText, startCardLines, formatStatusLine, formatToolLine, formatFileDiff, renderReply, modelListText, statusText } from './src/ui.js';
+		import { renderPickerLines, modelChoices } from './src/select.js';
 		if (!isPlain()) process.exit(2);
-		const text = helpText() + keysText();
-		if (/[·→⬢✓✗]/.test(text)) process.exit(3);
+		const text = [
+			helpText(),
+			keysText(),
+			startCardLines({ version: '1.7.2', model: 'auto · ollama/qwen2.5:3b', workspace: '/tmp', ollamaOk: true }).join('\\n'),
+			formatStatusLine({ model: 'auto · ollama/qwen2.5:3b', workspace: '/tmp', ollamaOk: false }),
+			formatToolLine({ name: 'write_file', detail: 'src/app.js', state: 'run' }),
+			formatToolLine({ name: 'write_file', detail: 'src/app.js', state: 'ok' }),
+			formatToolLine({ name: 'write_file', detail: 'src/app.js', state: 'fail' }),
+			formatFileDiff('src/app.js', { preview: '- old\\n+ new' }),
+			renderReply('See **name** and \`id\`\\n\\n\`\`\`\\nconst a = 1;\\n\`\`\`\\n'),
+			modelListText('ollama/qwen2.5:3b', ['qwen2.5:3b']),
+			statusText([['model', 'auto · ollama/qwen2.5:3b'], ['ollama', '✓ online']]),
+			renderPickerLines({
+				label: 'Model',
+				items: modelChoices({ installed: ['qwen2.5:3b'], selection: 'manual', modelId: 'qwen2.5:3b' }),
+				index: 1,
+			}).join('\\n'),
+		].join('\\n');
+		if (text.includes('\\x1b')) process.exit(4);
+		if (/[·→⬢✓✗▪▸▀▄█▌▐]/.test(text)) process.exit(3);
 		process.stdout.write('plain-ok');
 	`], {
 		cwd: path.join(here, '..'),
@@ -201,6 +259,65 @@ test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check mark
 	});
 	assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
 	assert.match(child.stdout, /plain-ok/);
+});
+
+test('palette uses truecolor and the closest 256-color fallback', () => {
+	const prev = {
+		COLORTERM: process.env.COLORTERM,
+		WT_SESSION: process.env.WT_SESSION,
+		TERM_PROGRAM: process.env.TERM_PROGRAM,
+	};
+	delete process.env.WT_SESSION;
+	delete process.env.TERM_PROGRAM;
+	setPlain(false);
+	try {
+		assert.equal(closestAnsi256(196, 101, 74), 167);
+		assert.equal(closestAnsi256(110, 127, 98), 65);
+		process.env.COLORTERM = 'truecolor';
+		const reply = renderReply('Use **bold** and `clay`.\n```\nconst n = 1;\n```\n');
+		assert.match(reply, /\x1b\[1mbold\x1b\[0m/);
+		assert.match(reply, /\x1b\[38;2;196;101;74mclay\x1b\[0m/);
+		assert.match(stripAnsi(reply), /│ const n = 1;/);
+		assert.doesNotMatch(reply, /╭/);
+		const diff = formatFileDiff('src/a.js', { preview: '- old\n+ new' });
+		assert.match(diff, /\x1b\[1msrc\/a\.js/);
+		assert.match(diff, /\x1b\[38;2;110;127;98m\+ new/);
+		assert.match(diff, /\x1b\[38;2;196;101;74m- old/);
+		const run = formatToolLine({ name: 'edit_file', detail: 'src/a.js', state: 'run' });
+		assert.match(run, /▪/);
+		assert.match(run, /\x1b\[1medit_file/);
+		assert.match(formatToolLine({ name: 'edit_file', detail: 'src/a.js', state: 'ok' }), /✓/);
+		assert.match(formatToolLine({ name: 'edit_file', detail: 'src/a.js', state: 'fail' }), /✗/);
+		const card = startCardLines({
+			version: '1.7.2',
+			model: 'ollama/qwen2.5:3b',
+			workspace: '/tmp',
+			ollamaOk: true,
+		}).join('\n');
+		assert.match(card, /\x1b\[1mCopix/);
+		assert.match(card, /48;2;196;101;74/);
+		assert.match(card, /38;2;110;127;98/);
+
+		process.env.COLORTERM = '';
+		const faded = formatStatusLine({ model: 'qwen2.5:3b', workspace: '/tmp/workspace', ollamaOk: true });
+		assert.match(faded, /\x1b\[38;5;167m/);
+		assert.match(faded, /\x1b\[38;5;65m/);
+		assert.match(faded, /\x1b\[1m/);
+		assert.doesNotMatch(faded, /38;2;/);
+		assert.ok(displayWidth(faded) <= termCols());
+		const wide = formatStatusLine({
+			model: 'auto · ollama/qwen2.5-coder:32b-instruct',
+			workspace: '/home/someone/very/long/path/to/a/project/workspace/folder',
+			ollamaOk: false,
+		});
+		assert.ok(displayWidth(wide) < termCols(), `status wider than the terminal: ${displayWidth(wide)}`);
+	} finally {
+		for (const [key, value] of Object.entries(prev)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		setPlain(false);
+	}
 });
 
 test('model choices put auto first and keep the current tag selectable', () => {
@@ -255,9 +372,10 @@ test('picker window follows the highlighted row', () => {
 		index: 1,
 	}).join('\n');
 	const plain = stripAnsi(lines);
-	assert.match(plain, /→\s+2\s+qwen2\.5:3b/);
+	assert.match(plain, /▸\s+2\s+qwen2\.5:3b/);
 	assert.match(plain, /1\s+auto/);
-	assert.doesNotMatch(plain, /→\s+1\s+auto/);
+	assert.match(plain, /✓/);
+	assert.doesNotMatch(plain, /▸\s+1\s+auto/);
 	assert.match(plain, /enter select/);
 });
 
