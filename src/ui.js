@@ -5,7 +5,7 @@
 
 const ESC = '\x1b[';
 
-export const color = {
+const ANSI = {
 	reset: `${ESC}0m`,
 	bold: `${ESC}1m`,
 	dim: `${ESC}2m`,
@@ -23,6 +23,43 @@ export const color = {
 	cardBg: `${ESC}48;2;244;244;245m`,
 	cardFg: `${ESC}38;2;28;28;30m`,
 };
+
+/** Screen-reader plain text. NO_COLOR starts it; /plain toggles this session. */
+let plainMode = process.env.NO_COLOR !== undefined;
+
+export function isPlain() {
+	return plainMode;
+}
+
+export function setPlain(on) {
+	plainMode = Boolean(on);
+}
+
+/** Decorative marks that plain text, including NO_COLOR, must not print. */
+const PLAIN_MARKS = [
+	['⬢ ', ''],
+	['⬢', ''],
+	['·', '-'],
+	['→', '->'],
+	['✓', 'ok'],
+	['✗', 'no'],
+];
+
+export function scrubPlain(text) {
+	const raw = String(text ?? '');
+	if (!plainMode) return raw;
+	let out = raw;
+	for (const [from, to] of PLAIN_MARKS) out = out.replaceAll(from, to);
+	return out;
+}
+
+export const color = new Proxy(ANSI, {
+	get(target, prop) {
+		if (plainMode) return '';
+		const value = target[prop];
+		return typeof value === 'string' ? value : '';
+	},
+});
 
 const HEX = '⬢';
 const DOT = '·';
@@ -180,6 +217,15 @@ export function cliInstallCommand() {
 }
 
 function box(lines, { label } = {}) {
+	if (plainMode) {
+		const width = cols();
+		const out = [];
+		if (label) out.push(`${label}:`);
+		for (const line of lines) {
+			for (const wrapped of wrapText(stripAnsi(line), width)) out.push(scrubPlain(wrapped));
+		}
+		return out.join('\n');
+	}
 	const width = cols();
 	const inner = width - 4;
 	const top = `${color.dim}╭${'─'.repeat(width - 2)}╮${color.reset}`;
@@ -198,6 +244,18 @@ function box(lines, { label } = {}) {
 }
 
 export function printBanner({ version, model, workspace, ollamaOk, installedCount = 0 }) {
+	if (plainMode) {
+		const models = installedCount
+			? ` (${installedCount} model${installedCount === 1 ? '' : 's'})`
+			: '';
+		console.log('');
+		console.log(`Copix agent cli ${version}`);
+		console.log(`Model: ${scrubPlain(model)}`);
+		console.log(`Workspace: ${workspace}`);
+		console.log(ollamaOk ? `Ollama: ready${models}` : 'Ollama: offline. Run ollama pull qwen2.5:3b');
+		console.log('');
+		return;
+	}
 	const status = ollamaOk
 		? `${color.green}${HEX}${color.reset} ollama ready${installedCount ? `${color.muted} ${DOT} ${installedCount} model${installedCount === 1 ? '' : 's'}${color.reset}` : ''}`
 		: `${color.yellow}${HEX}${color.reset} ollama offline${color.muted} ${DOT} run ollama pull qwen2.5:3b${color.reset}`;
@@ -218,6 +276,14 @@ export function printPromptHints() {
 }
 
 export function printFooter({ model, mode = 'Agent', filesEdited = 0, workspace = '' }) {
+	if (plainMode) {
+		const files = filesEdited > 0 ? `, ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited` : '';
+		const where = workspace ? ` Workspace: ${workspace}` : '';
+		console.log(`${mode}. Model: ${scrubPlain(model)}${files}${where}`);
+		console.log('Commands: /help, /keys, /plain, /model, /exit');
+		console.log('');
+		return;
+	}
 	const files = filesEdited > 0 ? `${color.muted} ${DOT} ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited${color.reset}` : '';
 	const where = workspace
 		? `${color.muted}  ${DOT}  ${truncate(workspace, Math.max(16, cols() - 28))}${color.reset}`
@@ -242,6 +308,11 @@ export function beginAssistant() {
 }
 
 export function writeModelLine(modelId, reason) {
+	if (plainMode) {
+		console.log(scrubPlain(reason ? `Model: ${modelId} (${reason})` : `Model: ${modelId}`));
+		stepOpen = true;
+		return;
+	}
 	const tip = reason ? `${color.muted} ${DOT} ${reason}${color.reset}` : '';
 	console.log(`${color.fg}${HEX}${color.reset} Model ${color.bold}${modelId}${color.reset}${tip}`);
 	stepOpen = true;
@@ -251,11 +322,22 @@ export function writeStatus(message) {
 	if (!message) return;
 	const clean = String(message).replace(/\s+/g, ' ').trim();
 	if (!clean) return;
+	if (plainMode) {
+		console.log(scrubPlain(clean));
+		stepOpen = true;
+		return;
+	}
 	process.stdout.write(`\r${color.muted}${HEX} ${truncate(clean, cols() - 4)}${color.reset}${ESC}K`);
 	stepOpen = true;
 }
 
 export function writeToolCall(name, args = {}) {
+	if (plainMode) {
+		const preview = args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '';
+		console.log(scrubPlain(preview ? `Tool: ${name} - ${preview}` : `Tool: ${name}`));
+		stepOpen = true;
+		return;
+	}
 	if (streaming) {
 		process.stdout.write('\n');
 		streaming = false;
@@ -270,6 +352,13 @@ export function writeToolCall(name, args = {}) {
 }
 
 export function writeToolResult(_name, ok, preview) {
+	if (plainMode) {
+		const mark = ok === false ? 'failed' : 'ok';
+		const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 5);
+		console.log(scrubPlain(lines.length ? `Result: ${mark} - ${lines[0]}` : `Result: ${mark}`));
+		for (const l of lines.slice(1)) console.log(`  ${scrubPlain(l)}`);
+		return;
+	}
 	const mark = ok === false ? `${color.red}✗${color.reset}` : `${color.green}✓${color.reset}`;
 	const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 5);
 	if (!lines.length) {
@@ -314,12 +403,23 @@ export function writeError(message) {
 }
 
 export function writeStep(label, detail = '') {
+	if (plainMode) {
+		console.log(scrubPlain(detail ? `${label} - ${detail}` : label));
+		stepOpen = true;
+		return;
+	}
 	const tip = detail ? `${color.muted} ${DOT} ${detail}${color.reset}` : '';
 	console.log(`${color.fg}${HEX}${color.reset} ${label}${tip}`);
 	stepOpen = true;
 }
 
 export function modelListText(activeModel, installed = []) {
+	if (plainMode) {
+		const rows = [`Active: ${scrubPlain(activeModel)}`];
+		if (!installed.length) rows.push('None installed. Run: ollama pull qwen2.5:3b');
+		else for (const tag of installed) rows.push(scrubPlain(tag));
+		return `\n${box(rows, { label: 'Models' })}\n`;
+	}
 	const rows = [`active ${DOT} ${activeModel}`, ''];
 	const activeId = String(activeModel).replace(/^ollama\//, '');
 	if (!installed.length) {
@@ -359,7 +459,7 @@ export function helpText() {
 			]),
 			'',
 			...alignRows([
-				['/model [tag|auto]', 'show or switch model (saved)'],
+				['/model [tag|auto]', 'pick a model, or pin a tag / auto'],
 				['/models', 'list installed Ollama tags'],
 				['/pull <tag>', 'download a model'],
 				['/cwd [path]', 'show or change workspace (saved)'],
@@ -368,6 +468,9 @@ export function helpText() {
 				['/history', 'recent sessions (Desktop sync)'],
 				['/new', 'fresh conversation'],
 				['/clear', 'wipe screen + fresh conversation'],
+				['/keys', 'keyboard shortcuts'],
+				['/plain [on|off]', 'screen-reader text, no color or boxes'],
+				['/help', 'show this help'],
 				['/exit', 'quit'],
 			]),
 			'',
@@ -384,6 +487,38 @@ export function helpText() {
 			'License: MIT — open source',
 		], { label: 'Help' }),
 		cliInstallCommand(),
+		'',
+	].join('\n');
+}
+
+export function keysText() {
+	return [
+		'',
+		box([
+			'Prompt',
+			'Enter          submit the line',
+			'Up / Down      slash menu, or earlier lines when it is closed',
+			'Tab            complete the highlighted command',
+			'Left / Right   move the cursor',
+			'Ctrl+A, Home   beginning of the line',
+			'Ctrl+E, End    end of the line',
+			'Ctrl+U         clear the line',
+			'Ctrl+C         clear the line; quit when it is already empty',
+			'Ctrl+D         quit when the line is empty',
+			'',
+			'Model picker (/model)',
+			'Up / Down, j / k    move',
+			'1-9                 jump to that row',
+			'Enter               choose the highlighted model',
+			'Esc, Ctrl+C         cancel and keep the current model',
+			'',
+			'Plain text (/plain)',
+			'The prompt is a normal line. /model asks for a',
+			'number or a model name. Empty Enter cancels.',
+			'Ctrl+C clears the line there too, and quits',
+			'only when that line is already empty.',
+			'Set NO_COLOR to start in plain text next time.',
+		], { label: 'Keys' }),
 		'',
 	].join('\n');
 }

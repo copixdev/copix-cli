@@ -1,9 +1,11 @@
 /**
  * Interactive prompt box with slash-command menu (Cursor Agent style).
  * Raw-mode line editor: type inside the rectangle, `/` opens the menu,
- * ↑/↓ navigate, Tab completes, Enter submits, Ctrl+C cancels.
+ * ↑/↓ navigate, Tab completes, Enter submits.
+ * Ctrl+C clears the line and quits only when the line is already empty.
  */
-import { color, displayWidth, fitLine, termCols } from './ui.js';
+import readline from 'node:readline';
+import { color, displayWidth, fitLine, isPlain, stripAnsi, termCols } from './ui.js';
 
 const ESC = '\x1b[';
 
@@ -17,7 +19,7 @@ function padToWidth(s, width) {
 }
 
 export const SLASH_COMMANDS = [
-	{ cmd: '/model', args: '[tag|auto]', desc: 'Show models, or switch (e.g. /model qwen2.5:3b)' },
+	{ cmd: '/model', args: '[tag|auto]', desc: 'Pick a model, or pin a tag (e.g. /model qwen2.5:3b)' },
 	{ cmd: '/models', args: '', desc: 'List installed Ollama models' },
 	{ cmd: '/pull', args: '<tag>', desc: 'Download an Ollama model (ollama pull)' },
 	{ cmd: '/cwd', args: '[path]', desc: 'Show or change the workspace directory' },
@@ -26,6 +28,8 @@ export const SLASH_COMMANDS = [
 	{ cmd: '/history', args: '', desc: 'Recent agent sessions (synced with Desktop)' },
 	{ cmd: '/new', args: '', desc: 'Start a fresh conversation' },
 	{ cmd: '/clear', args: '', desc: 'Clear the screen and start fresh' },
+	{ cmd: '/keys', args: '', desc: 'Keyboard shortcuts for the prompt and picker' },
+	{ cmd: '/plain', args: '[on|off]', desc: 'Toggle screen-reader plain text' },
 	{ cmd: '/help', args: '', desc: 'Show usage, tools, and settings' },
 	{ cmd: '/exit', args: '', desc: 'Quit Copix' },
 ];
@@ -37,12 +41,47 @@ function filteredCommands(buffer) {
 	return SLASH_COMMANDS.filter(c => c.cmd.slice(1).startsWith(q));
 }
 
+function readPlainPrompt({ placeholder, footer }) {
+	return new Promise((resolve) => {
+		for (const line of footer) {
+			const text = stripAnsi(line).trim();
+			if (text) process.stdout.write(`${text}\n`);
+		}
+		if (placeholder && footer.length === 0) process.stdout.write(`${placeholder}\n`);
+		let settled = false;
+		const rl = readline.createInterface({
+			input: process.stdin,
+			output: process.stdout,
+			terminal: Boolean(process.stdin.isTTY),
+		});
+		const done = (value) => {
+			if (settled) return;
+			settled = true;
+			rl.close();
+			resolve(value);
+		};
+		rl.on('SIGINT', () => {
+			// Same rule as the drawn prompt: clear a typed line, quit only when it is empty.
+			if (rl.line && rl.line.length > 0) {
+				if (typeof rl._moveCursor === 'function') rl._moveCursor(Infinity);
+				if (typeof rl._deleteLineLeft === 'function') rl._deleteLineLeft();
+				return;
+			}
+			done(null);
+		});
+		rl.on('close', () => done(null));
+		rl.question('> ', (answer) => done(String(answer ?? '').trim()));
+	});
+}
+
 /**
  * Read one line inside a drawn box. Returns the submitted string,
  * or null on Ctrl+D / Ctrl+C with an empty buffer.
  * Ctrl+C with text clears the line. ↑/↓ recall `history` when the slash menu is closed.
+ * Plain-text mode uses a normal line so a screen reader can follow it.
  */
 export function readPrompt({ placeholder = 'Ask, plan, build anything', footer = [], history = [] } = {}) {
+	if (isPlain()) return readPlainPrompt({ placeholder, footer });
 	return new Promise((resolve) => {
 		const stdin = process.stdin;
 		const stdout = process.stdout;
