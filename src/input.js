@@ -5,7 +5,7 @@
  * Ctrl+C clears the line and quits only when the line is already empty.
  */
 import readline from 'node:readline';
-import { color, displayWidth, fitLine, isPlain, stripAnsi, termCols } from './ui.js';
+import { color, displayWidth, fitLine, isPlain, repaintFrame, stripAnsi, termCols } from './ui.js';
 
 const ESC = '\x1b[';
 
@@ -88,7 +88,7 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 		let buffer = '';
 		let cursor = 0;
 		let menuIndex = 0;
-		let renderedLines = 0;
+		let drawnLines = [];
 		let historyIndex = history.length;
 		let draft = '';
 
@@ -96,6 +96,8 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 		if (stdin.isTTY) stdin.setRawMode(true);
 		stdin.resume();
 		stdout.write(`${ESC}?25l`); // hide hardware cursor — we draw our own
+		const onResize = () => render();
+		stdout.on('resize', onResize);
 
 		function render(final = false) {
 			const width = cols();
@@ -125,7 +127,7 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				const scrolled = start > 0 ? `${color.muted}…${color.reset}` : '';
 				text = `${scrolled}${before}${ESC}7m${at}${ESC}27m${after}`;
 			}
-			const arrow = `${color.accent}→${color.reset} `;
+			const arrow = `${color.clay}→${color.reset} `;
 			const inputLine = `${color.dim}│${color.reset} ${arrow}${padToWidth(text, Math.max(0, inner - 2))} ${color.dim}│${color.reset}`;
 
 			lines.push(`${color.dim}╭${'─'.repeat(width - 2)}╮${color.reset}`);
@@ -136,34 +138,30 @@ export function readPrompt({ placeholder = 'Ask, plan, build anything', footer =
 				for (let i = 0; i < menu.length; i++) {
 					const m = menu[i];
 					const sel = i === menuIndex;
-					const mark = sel ? `${color.accent}→${color.reset}` : ' ';
+					const mark = sel ? `${color.clay}→${color.reset}` : ' ';
 					const label = `${m.cmd}${m.args ? ` ${m.args}` : ''}`;
-					const cmd = sel ? `${color.bold}${label}${color.reset}` : label;
+					const cmd = sel ? `${color.clay}${label}${color.reset}` : label;
 					lines.push(fitLine(`${mark} ${padToWidth(cmd, 22)} ${color.muted}${m.desc}${color.reset}`, width));
 				}
 			} else if (!final) {
 				for (const f of footer) lines.push(fitLine(f, width));
 			}
 
-			// repaint block in place
-			if (renderedLines > 0) {
-				stdout.write(`${ESC}${renderedLines}A`);
-			}
-			for (const line of lines) {
-				stdout.write(`\r${ESC}2K${line}\n`);
-			}
-			// clear leftover lines from a previously taller frame
-			const extra = renderedLines - lines.length;
-			if (extra > 0) {
-				for (let i = 0; i < extra; i++) stdout.write(`\r${ESC}2K\n`);
-				stdout.write(`${ESC}${extra}A`);
-			}
-			renderedLines = lines.length;
+			// Repaint from the top of the previous frame. After a narrow resize the
+			// terminal has rewrapped those lines, so the cursor-up count is the
+			// reflowed row count, then the rest of the screen is cleared.
+			drawnLines = repaintFrame(
+				(chunk) => stdout.write(chunk),
+				drawnLines,
+				lines,
+				stdout.columns || 80,
+			);
 		}
 
 		function finish(result) {
 			render(true);
 			stdout.write(`${ESC}?25h`);
+			stdout.off('resize', onResize);
 			stdin.removeListener('data', onData);
 			if (stdin.isTTY) stdin.setRawMode(Boolean(wasRaw));
 			stdin.pause();

@@ -72,20 +72,23 @@ function makeCallbacks(state) {
 			}
 			ui.writeToolCall(tool, args || {});
 		},
-		onToolEnd: (_id, tool, _args, meta) => {
-			const ok = meta?.ok !== false && !meta?.error;
+		onToolEnd: (_id, tool, args, meta) => {
+			const failed = toolFailed(meta);
 			const preview = String(meta?.result ?? meta?.error ?? '');
-			// Keep web tool previews short in the timeline
 			const clip = /web_search|web_fetch/.test(tool)
 				? preview.split('\n').slice(0, 6).join('\n')
 				: preview;
-			ui.writeToolResult(tool, ok, clip);
+			ui.writeToolResult(tool, !failed, failed ? clip : '', {
+				args: args || {},
+				diff: failed ? null : meta?.diff,
+			});
 		},
 		onStatus: (msg) => {
 			ui.writeStatus(msg);
 		},
 		onClearText: () => {
 			state.assistantText = '';
+			ui.resetReplyStyle();
 		},
 		onStructuredResponse: () => undefined,
 	};
@@ -294,24 +297,17 @@ async function runOne({
 	}
 }
 
-function footerLines({ model, workspace, filesEdited }) {
-	if (ui.isPlain()) {
-		const files = filesEdited > 0
-			? `, ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited`
-			: '';
-		return [
-			`Agent, ollama/${model}${files}`,
-			`Commands: /help, /keys, /plain, /model. Workspace: ${workspace}`,
-		];
-	}
-	const dot = ` ${ui.color.muted}·${ui.color.reset} `;
-	const files = filesEdited > 0
-		? `${dot}${ui.color.muted}${filesEdited} file${filesEdited === 1 ? '' : 's'} edited${ui.color.reset}`
-		: '';
-	return [
-		`${ui.color.accent}◉${ui.color.reset} Agent${dot}${ui.color.muted}ollama/${model}${ui.color.reset}${files}`,
-		`${ui.color.muted}/ commands  ·  ↑↓ history  ·  tab complete  ·  ${workspace}${ui.color.reset}`,
-	];
+function toolFailed(meta) {
+	if (!meta || meta.ok === false || meta.error) return true;
+	const result = String(meta.result ?? '').trim();
+	return /^(?:error|failed|refused|could not|unknown tool)\b/i.test(result);
+}
+
+// Status line under the prompt. It is redrawn with the prompt (including on
+// resize) instead of pinned with a scroll region, which fights streamed text
+// and Windows Terminal. One-shot mode prints the same line once the reply ends.
+function footerLines({ model, workspace, ollamaOk }) {
+	return [ui.formatStatusLine({ model, workspace, ollamaOk })];
 }
 
 function expandUserPath(raw) {
@@ -335,7 +331,7 @@ function ok(msg) {
 		console.log(`\n${ui.scrubPlain(msg)}\n`);
 		return;
 	}
-	console.log(`\n${ui.color.green}⬢${ui.color.reset} ${msg}\n`);
+	console.log(`\n${ui.color.sage}✓${ui.color.reset} ${msg}\n`);
 }
 
 function info(msg) {
@@ -351,7 +347,7 @@ function warn(msg) {
 		console.log(`\nWarning: ${ui.scrubPlain(msg)}\n`);
 		return;
 	}
-	console.log(`\n${ui.color.yellow}⬢ ${msg}${ui.color.reset}\n`);
+	console.log(`\n${ui.color.clay}✗${ui.color.reset} ${msg}\n`);
 }
 
 async function repl(deps) {
@@ -362,7 +358,7 @@ async function repl(deps) {
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 	let history = [];
 	let lastModel = settings.model.modelId;
-	let filesEdited = 0;
+	let ollamaOk = false;
 	let session = newCliSession(workspaceRoot);
 	const promptHistory = [];
 
@@ -371,20 +367,24 @@ async function repl(deps) {
 		await api.setSettings(rawSettings);
 	}
 
+	function activeModelLabel() {
+		const id = `ollama/${lastModel}`;
+		return settings.model.selection === 'auto' ? `auto · ${id}` : id;
+	}
+
 	async function printBannerNow() {
 		const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
+		ollamaOk = Boolean(status?.online);
 		ui.printBanner({
 			version: pkg.version,
-			model: `${settings.model.selection === 'auto' ? 'auto · ' : ''}${modelLabel(settings)}`,
+			model: activeModelLabel(),
 			workspace: workspaceRoot,
-			ollamaOk: Boolean(status?.online),
-			installedCount: Array.isArray(status?.models) ? status.models.length : 0,
+			ollamaOk,
 		});
 	}
 
 	function resetConversation() {
 		history = [];
-		filesEdited = 0;
 		session = newCliSession(workspaceRoot);
 	}
 
@@ -412,7 +412,7 @@ async function repl(deps) {
 
 	while (true) {
 		const line = await readPrompt({
-			footer: footerLines({ model: lastModel, workspace: workspaceRoot, filesEdited }),
+			footer: footerLines({ model: activeModelLabel(), workspace: workspaceRoot, ollamaOk }),
 			history: promptHistory,
 		});
 		if (line === null) break;
@@ -520,22 +520,26 @@ async function repl(deps) {
 		if (cmd === '/status') {
 			const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
 			const models = Array.isArray(status?.models) ? status.models : [];
-			info([
-				`copix      ${pkg.version}`,
-				`platform   ${process.platform}/${process.arch}`,
-				`ollama     ${status?.online ? 'online' : 'offline'}`,
-				`model      ${settings.model.selection === 'auto' ? 'auto · ' : ''}${modelLabel(settings)}`,
-				`installed  ${models.length ? models.join(', ') : '(none)'}`,
-				`workspace  ${workspaceRoot}`,
-				`history    ${history.length / 2 | 0} turn${history.length === 2 ? '' : 's'} this session`,
-				`settings   ${copixPaths().settings}`,
-				`sessions   ${copixPaths().sessions}`,
-			].join('\n'));
+			ollamaOk = Boolean(status?.online);
+			const modelName = activeModelLabel();
+			const turns = history.length / 2 | 0;
+			console.log(ui.statusText([
+				['version', pkg.version],
+				['platform', `${process.platform}/${process.arch}`],
+				['ollama', `${ui.toneMark(ollamaOk)} ${ollamaOk ? 'online' : 'offline'}`],
+				['model', ui.isPlain() ? modelName : `${ui.color.bold}${ui.color.clay}${modelName}${ui.color.reset}`],
+				['installed', models.length ? models.join(', ') : '(none)'],
+				['workspace', ui.isPlain() ? workspaceRoot : `${ui.color.hint}${workspaceRoot}${ui.color.reset}`],
+				['history', `${turns} turn${turns === 1 ? '' : 's'} this session`],
+				['settings', copixPaths().settings],
+				['sessions', copixPaths().sessions],
+			]));
 			continue;
 		}
 
 		if (cmd === '/doctor') {
-			await runDoctor(api, pkg.version, workspaceRoot);
+			const result = await runDoctor(api, pkg.version, workspaceRoot);
+			ollamaOk = Boolean(result?.online);
 			continue;
 		}
 
@@ -554,12 +558,16 @@ async function repl(deps) {
 				.map((s) => {
 					const origin = s.origin === 'cli' ? 'cli' : 'desktop';
 					const turns = Math.floor(s.messages.length / 2);
-					return `${ui.color.accent}⬢${ui.color.reset} ${s.title || '(untitled)'}  ${ui.color.muted}· ${origin} · ${turns} turn${turns === 1 ? '' : 's'} · ${timeAgo(s.updatedAt ?? s.createdAt ?? Date.now())}${ui.color.reset}`;
+					const when = timeAgo(s.updatedAt ?? s.createdAt ?? Date.now());
+					return ui.historyLine(
+						s.title || '(untitled)',
+						`${origin} · ${turns} turn${turns === 1 ? '' : 's'} · ${when}`,
+					);
 				});
-			const sessionLines = `${rows.join('\n')}\nSynced with Copix Desktop via ${copixPaths().sessions}`;
+			const synced = `Synced with Copix Desktop via ${copixPaths().sessions}`;
 			console.log(ui.isPlain()
-				? `\n${ui.scrubPlain(sessionLines)}\n`
-				: `\n${rows.join('\n')}\n${ui.color.muted}Synced with Copix Desktop via ${copixPaths().sessions}${ui.color.reset}\n`);
+				? `\n${rows.join('\n')}\n${ui.scrubPlain(synced)}\n`
+				: `\n${rows.join('\n')}\n${ui.color.hint}${synced}${ui.color.reset}\n`);
 			continue;
 		}
 
@@ -571,7 +579,7 @@ async function repl(deps) {
 
 		if (cmd === '/clear') {
 			resetConversation();
-			process.stdout.write('\x1b[2J\x1b[3J\x1b[H'); // wipe screen + scrollback
+			if (!ui.isPlain()) process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
 			await printBannerNow();
 			continue;
 		}
@@ -595,7 +603,6 @@ async function repl(deps) {
 			});
 			workspaceRoot = turn.workspaceRoot;
 			lastModel = turn.model;
-			filesEdited += turn.filesEdited;
 			recordTurn(session, line, turn.assistantText);
 			session.workspaceRoot = workspaceRoot;
 			await persistSession(api, session);
@@ -614,15 +621,18 @@ async function runDoctor(api, version, workspaceRoot) {
 	const { settings: settingsPath, sessions: sessionsPath } = copixPaths();
 	const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
 	const models = Array.isArray(status?.models) ? status.models : [];
+	const yes = ui.toneMark(true);
+	const no = ui.toneMark(false);
+	const pending = ui.toneMark(null);
 	const rows = [
 		`copix ${version} · ${process.platform}/${process.arch}`,
-		`${nodeOk ? '✓' : '✗'} Node.js ${process.version} (need 18+)`,
-		`${agentOk ? '✓' : '✗'} Standalone agent runtime`,
-		`${status?.online ? '✓' : '✗'} Ollama ${status?.online ? 'online' : 'offline — install from https://ollama.com'}`,
-		`${models.length ? '✓' : '✗'} Models ${models.length ? models.slice(0, 6).join(', ') : `(none — ollama pull ${FALLBACK_MODEL})`}`,
-		`${fs.existsSync(settingsPath) ? '✓' : '·'} Settings ${settingsPath}`,
-		`${fs.existsSync(sessionsPath) ? '✓' : '·'} Sessions ${sessionsPath}`,
-		`✓ Workspace ${workspaceRoot}`,
+		`${nodeOk ? yes : no} Node.js ${process.version} (need 18+)`,
+		`${agentOk ? yes : no} Standalone agent runtime`,
+		`${status?.online ? yes : no} Ollama ${status?.online ? 'online' : 'offline — install from https://ollama.com'}`,
+		`${models.length ? yes : no} Models ${models.length ? models.slice(0, 6).join(', ') : `(none — ollama pull ${FALLBACK_MODEL})`}`,
+		`${fs.existsSync(settingsPath) ? yes : pending} Settings ${settingsPath}`,
+		`${fs.existsSync(sessionsPath) ? yes : pending} Sessions ${sessionsPath}`,
+		`${yes} Workspace ${workspaceRoot}`,
 		'',
 		'No account required — Desktop and CLI are local-only.',
 		'Reinstall: the command below',
@@ -631,6 +641,7 @@ async function runDoctor(api, version, workspaceRoot) {
 	if (!nodeOk || !agentOk || !status?.online || !models.length) {
 		process.exitCode = 1;
 	}
+	return { online: Boolean(status?.online) };
 }
 
 export async function main(argv) {
@@ -673,7 +684,6 @@ export async function main(argv) {
 			model: modelLabel(settings),
 			workspace: workspaceRoot,
 			ollamaOk: Boolean(status?.online),
-			installedCount: installedModels.length,
 		});
 		ui.beginUser(opts.prompt);
 		const session = newCliSession(workspaceRoot);
@@ -693,9 +703,8 @@ export async function main(argv) {
 			await persistSession(deps.api, session);
 			ui.printFooter({
 				model: `ollama/${turn.model}`,
-				mode: 'Agent',
-				filesEdited: turn.filesEdited,
 				workspace: turn.workspaceRoot,
+				ollamaOk: Boolean(status?.online),
 			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);

@@ -1,6 +1,7 @@
 /**
- * Cursor Agent–style text UI for Copix CLI.
- * Question card · hexagon timeline · → prompt · footer meta.
+ * Copix CLI text UI.
+ * Clay prompt and active model, sage for success, dim gray for hints.
+ * Truecolor when the terminal supports it, otherwise the closest 256-color code.
  */
 
 const ESC = '\x1b[';
@@ -8,21 +9,50 @@ const ESC = '\x1b[';
 const ANSI = {
 	reset: `${ESC}0m`,
 	bold: `${ESC}1m`,
-	dim: `${ESC}2m`,
-	italic: `${ESC}3m`,
-	red: `${ESC}31m`,
-	green: `${ESC}32m`,
-	yellow: `${ESC}33m`,
-	blue: `${ESC}34m`,
-	magenta: `${ESC}35m`,
-	cyan: `${ESC}36m`,
-	gray: `${ESC}90m`,
-	fg: `${ESC}38;2;28;28;30m`,
-	muted: `${ESC}38;2;120;120;128m`,
-	accent: `${ESC}38;2;124;92;255m`,
-	cardBg: `${ESC}48;2;244;244;245m`,
-	cardFg: `${ESC}38;2;28;28;30m`,
 };
+
+/** Site palette. Ink is the terminal's own foreground so it reads on light and dark. */
+const RGB = {
+	clay: [196, 101, 74],
+	sage: [110, 127, 98],
+	hint: [125, 125, 125],
+};
+
+const CUBE = [0, 95, 135, 175, 215, 255];
+
+/** Closest xterm cube or gray-ramp index. System colors 0–15 are terminal-defined, so they are skipped. */
+export function closestAnsi256(r, g, b) {
+	let best = 16;
+	let bestD = Infinity;
+	const consider = (code, cr, cg, cb) => {
+		const d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
+		if (d < bestD) {
+			bestD = d;
+			best = code;
+		}
+	};
+	for (let i = 0; i < 216; i++) {
+		consider(16 + i, CUBE[(i / 36) | 0], CUBE[((i / 6) | 0) % 6], CUBE[i % 6]);
+	}
+	for (let i = 0; i < 24; i++) {
+		const v = 8 + i * 10;
+		consider(232 + i, v, v, v);
+	}
+	return best;
+}
+
+export function supportsTrueColor() {
+	if (/truecolor|24bit/i.test(String(process.env.COLORTERM || ''))) return true;
+	if (process.env.WT_SESSION) return true;
+	const program = String(process.env.TERM_PROGRAM || '');
+	return program === 'vscode' || program === 'iTerm.app' || program === 'ghostty' || program === 'WezTerm';
+}
+
+function paint(ground, rgb) {
+	const [r, g, b] = rgb;
+	if (supportsTrueColor()) return `${ESC}${ground};2;${r};${g};${b}m`;
+	return `${ESC}${ground};5;${closestAnsi256(r, g, b)}m`;
+}
 
 /** Screen-reader plain text. NO_COLOR starts it; /plain toggles this session. */
 let plainMode = process.env.NO_COLOR !== undefined;
@@ -39,32 +69,38 @@ export function setPlain(on) {
 const PLAIN_MARKS = [
 	['⬢ ', ''],
 	['⬢', ''],
+	['▪', ''],
+	['▸', ''],
 	['·', '-'],
 	['→', '->'],
 	['✓', 'ok'],
 	['✗', 'no'],
 ];
+const HALF_BLOCK = /[▀▄█▌▐]/g;
 
 export function scrubPlain(text) {
 	const raw = String(text ?? '');
 	if (!plainMode) return raw;
 	let out = raw;
 	for (const [from, to] of PLAIN_MARKS) out = out.replaceAll(from, to);
-	return out;
+	return out.replace(HALF_BLOCK, '');
 }
 
 export const color = new Proxy(ANSI, {
 	get(target, prop) {
 		if (plainMode) return '';
-		const value = target[prop];
-		return typeof value === 'string' ? value : '';
+		if (prop === 'reset' || prop === 'bold') return target[prop] || '';
+		if (prop === 'clay' || prop === 'accent' || prop === 'red' || prop === 'yellow') return paint(38, RGB.clay);
+		if (prop === 'sage' || prop === 'green') return paint(38, RGB.sage);
+		if (prop === 'hint' || prop === 'muted' || prop === 'dim' || prop === 'gray' || prop === 'fg') return paint(38, RGB.hint);
+		if (prop === 'clayBg') return paint(48, RGB.clay);
+		return '';
 	},
 });
 
-const HEX = '⬢';
 const DOT = '·';
 const ARROW = '→';
-const MODE = '◉';
+const UPPER = '▀';
 
 /** Terminal width the frames actually fit in. Narrow windows stay inside the real column count. */
 export function termCols() {
@@ -145,6 +181,31 @@ export function fitLine(s, width) {
 	return `${out}…${color.reset}`;
 }
 
+/**
+ * Physical rows a previously drawn frame occupies after the terminal reflows
+ * it to `columns`. Each old line takes ceil(visibleWidth / columns) rows, at least 1.
+ */
+export function wrappedRowCount(lines, columns) {
+	const cols = Math.max(1, Number(columns) || 1);
+	let rows = 0;
+	for (const line of lines) {
+		const width = displayWidth(line);
+		rows += Math.max(1, Math.ceil(width / cols));
+	}
+	return rows;
+}
+
+/** Move up the reflowed frame, erase through the end of the screen, then draw the next frame. */
+export function repaintFrame(write, previousLines, nextLines, columns) {
+	const prior = previousLines || [];
+	if (prior.length) {
+		const up = wrappedRowCount(prior, columns);
+		write(`${ESC}${up}A${ESC}J`);
+	}
+	for (const line of nextLines) write(`\r${ESC}2K${line}\n`);
+	return nextLines;
+}
+
 function wrapText(text, width) {
 	const raw = String(text ?? '');
 	const limit = Math.max(8, width);
@@ -216,7 +277,7 @@ export function cliInstallCommand() {
 	return 'curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash';
 }
 
-function box(lines, { label } = {}) {
+function box(lines, { label, tone } = {}) {
 	if (plainMode) {
 		const width = cols();
 		const out = [];
@@ -228,68 +289,123 @@ function box(lines, { label } = {}) {
 	}
 	const width = cols();
 	const inner = width - 4;
-	const top = `${color.dim}╭${'─'.repeat(width - 2)}╮${color.reset}`;
-	const bot = `${color.dim}╰${'─'.repeat(width - 2)}╯${color.reset}`;
+	const edge = color.hint;
+	const top = `${edge}╭${'─'.repeat(width - 2)}╮${color.reset}`;
+	const bot = `${edge}╰${'─'.repeat(width - 2)}╯${color.reset}`;
 	const out = [top];
 	if (label) {
-		out.push(`${color.dim}│${color.reset} ${pad(`${color.muted}${label}${color.reset}`, inner)} ${color.dim}│${color.reset}`);
+		const painted = tone === 'error'
+			? `${color.bold}${color.clay}${label}${color.reset}`
+			: `${color.bold}${label}${color.reset}`;
+		out.push(`${edge}│${color.reset} ${pad(painted, inner)} ${edge}│${color.reset}`);
 	}
 	for (const line of lines) {
 		for (const wrapped of wrapText(line, inner)) {
-			out.push(`${color.dim}│${color.reset} ${pad(wrapped, inner)} ${color.dim}│${color.reset}`);
+			out.push(`${edge}│${color.reset} ${pad(wrapped, inner)} ${edge}│${color.reset}`);
 		}
 	}
 	out.push(bot);
 	return out.join('\n');
 }
 
-export function printBanner({ version, model, workspace, ollamaOk, installedCount = 0 }) {
-	if (plainMode) {
-		const models = installedCount
-			? ` (${installedCount} model${installedCount === 1 ? '' : 's'})`
-			: '';
-		console.log('');
-		console.log(`Copix agent cli ${version}`);
-		console.log(`Model: ${scrubPlain(model)}`);
-		console.log(`Workspace: ${workspace}`);
-		console.log(ollamaOk ? `Ollama: ready${models}` : 'Ollama: offline. Run ollama pull qwen2.5:3b');
-		console.log('');
-		return;
+function clipPlain(text, width) {
+	const s = String(text ?? '');
+	if (width <= 0) return '';
+	if (displayWidth(s) <= width) return s;
+	if (width === 1) return '…';
+	let out = '';
+	let w = 0;
+	for (const ch of s) {
+		const dw = isWide(ch.codePointAt(0) ?? 0) ? 2 : 1;
+		if (w + dw > width - 1) break;
+		out += ch;
+		w += dw;
 	}
-	const status = ollamaOk
-		? `${color.green}${HEX}${color.reset} ollama ready${installedCount ? `${color.muted} ${DOT} ${installedCount} model${installedCount === 1 ? '' : 's'}${color.reset}` : ''}`
-		: `${color.yellow}${HEX}${color.reset} ollama offline${color.muted} ${DOT} run ollama pull qwen2.5:3b${color.reset}`;
+	return `${out}…`;
+}
 
+function clipPath(text, width) {
+	const s = String(text ?? '');
+	if (width <= 0) return '';
+	if (displayWidth(s) <= width) return s;
+	if (width === 1) return '…';
+	const chars = [...s];
+	let out = '';
+	let w = 0;
+	for (let i = chars.length - 1; i >= 0; i--) {
+		const dw = isWide(chars[i].codePointAt(0) ?? 0) ? 2 : 1;
+		if (w + dw > width - 1) break;
+		out = chars[i] + out;
+		w += dw;
+	}
+	return `…${out}`;
+}
+
+/** Four squares: ink over clay, sage over clay. One row of upper-half blocks. */
+export function pixelMark() {
+	if (plainMode) return '';
+	const bg = color.clayBg;
+	return `${color.reset}${bg}${UPPER}${color.sage}${bg}${UPPER}${color.reset}`;
+}
+
+/**
+ * One status line: active model in bold clay, workspace dimmed, Ollama check or cross.
+ * Stays inside the terminal width so an 80-column window does not wrap it.
+ */
+export function formatStatusLine({ model = '', workspace = '', ollamaOk = false } = {}) {
+	const name = String(model ?? '');
+	const where = String(workspace ?? '');
+	if (plainMode) {
+		const oll = ollamaOk ? 'Ollama: ready' : 'Ollama: offline';
+		return scrubPlain(`Model: ${name}  Workspace: ${where}  ${oll}`);
+	}
+	const width = Math.max(20, cols() - 1);
+	const tailWidth = 8; // "✓ ollama"
+	const gap = '  ';
+	let modelPlain = name.replace(/\s+/g, ' ').trim();
+	const maxModel = Math.max(8, Math.min(displayWidth(modelPlain) || 8, Math.floor(width * 0.5)));
+	modelPlain = clipPlain(modelPlain, maxModel);
+	let room = width - displayWidth(modelPlain) - tailWidth - gap.length * 2;
+	let path = room >= 8 ? clipPath(where, room) : '';
+	if (!path && displayWidth(modelPlain) + gap.length + tailWidth > width) {
+		modelPlain = clipPlain(modelPlain, Math.max(4, width - gap.length - tailWidth));
+	}
+	const modelAnsi = `${color.bold}${color.clay}${modelPlain}${color.reset}`;
+	const pathAnsi = path ? `${gap}${color.hint}${path}${color.reset}` : '';
+	const mark = ollamaOk ? `${color.sage}✓${color.reset}` : `${color.clay}✗${color.reset}`;
+	return `${modelAnsi}${pathAnsi}${gap}${mark} ${color.hint}ollama${color.reset}`;
+}
+
+export function startCardLines({ version, model, workspace, ollamaOk }) {
+	if (plainMode) {
+		return [
+			`Copix ${version}`,
+			formatStatusLine({ model, workspace, ollamaOk }),
+		];
+	}
+	const mark = pixelMark();
+	return [
+		`${mark}  ${color.bold}Copix${color.reset}  ${color.hint}${version}${color.reset}`,
+		formatStatusLine({ model, workspace, ollamaOk }),
+	];
+}
+
+export function printBanner({ version, model, workspace, ollamaOk }) {
 	console.log('');
-	console.log(`${color.bold}Copix${color.reset}${color.muted}  agent cli ${version}${color.reset}`);
-	console.log(`${color.muted}${MODE}${color.reset} ${model}${color.muted}  ${DOT}  ${truncate(workspace, cols() - 24)}${color.reset}`);
-	console.log(status);
+	for (const line of startCardLines({ version, model, workspace, ollamaOk })) console.log(line);
 	console.log('');
 }
 
 export function promptLabel() {
-	return `${color.accent}${ARROW}${color.reset} `;
+	return `${color.clay}${ARROW}${color.reset} `;
 }
 
 export function printPromptHints() {
-	console.log(box([`${color.muted}Ask, plan, build anything${color.reset}`]));
+	console.log(box([`${color.hint}Ask, plan, build anything${color.reset}`]));
 }
 
-export function printFooter({ model, mode = 'Agent', filesEdited = 0, workspace = '' }) {
-	if (plainMode) {
-		const files = filesEdited > 0 ? `, ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited` : '';
-		const where = workspace ? ` Workspace: ${workspace}` : '';
-		console.log(`${mode}. Model: ${scrubPlain(model)}${files}${where}`);
-		console.log('Commands: /help, /keys, /plain, /model, /exit');
-		console.log('');
-		return;
-	}
-	const files = filesEdited > 0 ? `${color.muted} ${DOT} ${filesEdited} file${filesEdited === 1 ? '' : 's'} edited${color.reset}` : '';
-	const where = workspace
-		? `${color.muted}  ${DOT}  ${truncate(workspace, Math.max(16, cols() - 28))}${color.reset}`
-		: '';
-	console.log(`${color.accent}${MODE}${color.reset} ${mode}${color.muted}  ${DOT}  ${model}${files}${where}${color.reset}`);
-	console.log(`${color.muted}/ commands  ${DOT}  /model  ${DOT}  /cwd  ${DOT}  /clear  ${DOT}  /exit${color.reset}`);
+export function printFooter({ model, workspace = '', ollamaOk = false }) {
+	console.log(formatStatusLine({ model, workspace, ollamaOk }));
 	console.log('');
 }
 
@@ -301,20 +417,74 @@ export function beginUser(text) {
 
 let streaming = false;
 let stepOpen = false;
+let toolArmed = false;
+let replyRenderer = createReplyRenderer();
+
+function toolDetail(args = {}) {
+	return String(args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '');
+}
+
+export function formatToolLine({ name, detail = '', state = 'run' } = {}) {
+	const tip = String(detail || '');
+	if (plainMode) {
+		if (state === 'run') return scrubPlain(tip ? `Tool: ${name} - ${tip}` : `Tool: ${name}`);
+		const mark = state === 'fail' ? 'failed' : 'ok';
+		return scrubPlain(tip ? `Result: ${mark} - ${name} - ${tip}` : `Result: ${mark} - ${name}`);
+	}
+	const glyph = state === 'ok'
+		? `${color.sage}✓${color.reset}`
+		: state === 'fail'
+			? `${color.clay}✗${color.reset}`
+			: `${color.clay}▪${color.reset}`;
+	const path = tip ? `  ${color.hint}${tip}${color.reset}` : '';
+	return `${glyph} ${color.bold}${name}${color.reset}${path}`;
+}
+
+export function formatFileDiff(file, diff) {
+	const preview = String(diff?.preview || '').split('\n').filter(Boolean).slice(0, 8);
+	if (!preview.length) return '';
+	const name = String(file || 'file');
+	if (plainMode) return [scrubPlain(name), ...preview.map((line) => scrubPlain(line))].join('\n');
+	const rows = [`${color.bold}${name}${color.reset}`];
+	for (const line of preview) {
+		if (line.startsWith('+')) rows.push(`${color.sage}${line}${color.reset}`);
+		else if (line.startsWith('-')) rows.push(`${color.clay}${line}${color.reset}`);
+		else rows.push(`${color.hint}${line}${color.reset}`);
+	}
+	return rows.join('\n');
+}
+
+function finishReplyHold() {
+	const tail = replyRenderer.finish();
+	if (tail) process.stdout.write(tail);
+}
+
+function disarmToolRow() {
+	toolArmed = false;
+}
 
 export function beginAssistant() {
 	streaming = false;
 	stepOpen = false;
+	toolArmed = false;
+	replyRenderer = createReplyRenderer();
+}
+
+export function resetReplyStyle() {
+	const tail = replyRenderer.reset();
+	if (tail) process.stdout.write(tail);
+	replyRenderer = createReplyRenderer();
 }
 
 export function writeModelLine(modelId, reason) {
+	disarmToolRow();
 	if (plainMode) {
 		console.log(scrubPlain(reason ? `Model: ${modelId} (${reason})` : `Model: ${modelId}`));
 		stepOpen = true;
 		return;
 	}
-	const tip = reason ? `${color.muted} ${DOT} ${reason}${color.reset}` : '';
-	console.log(`${color.fg}${HEX}${color.reset} Model ${color.bold}${modelId}${color.reset}${tip}`);
+	const tip = reason ? `  ${color.hint}${reason}${color.reset}` : '';
+	console.log(`Model ${color.bold}${color.clay}${modelId}${color.reset}${tip}`);
 	stepOpen = true;
 }
 
@@ -322,115 +492,284 @@ export function writeStatus(message) {
 	if (!message) return;
 	const clean = String(message).replace(/\s+/g, ' ').trim();
 	if (!clean) return;
+	disarmToolRow();
 	if (plainMode) {
 		console.log(scrubPlain(clean));
 		stepOpen = true;
 		return;
 	}
-	process.stdout.write(`\r${color.muted}${HEX} ${truncate(clean, cols() - 4)}${color.reset}${ESC}K`);
+	process.stdout.write(`\r${color.hint}${truncate(clean, cols() - 2)}${color.reset}${ESC}K`);
 	stepOpen = true;
 }
 
 export function writeToolCall(name, args = {}) {
-	if (plainMode) {
-		const preview = args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '';
-		console.log(scrubPlain(preview ? `Tool: ${name} - ${preview}` : `Tool: ${name}`));
-		stepOpen = true;
-		return;
-	}
+	toolArmed = false;
 	if (streaming) {
+		finishReplyHold();
 		process.stdout.write('\n');
 		streaming = false;
 	}
-	if (stepOpen) process.stdout.write('\n');
-	const preview = args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '';
-	const detail = preview
-		? `${color.muted} ${DOT} ${truncate(String(preview), cols() - 20)}${color.reset}`
-		: '';
-	console.log(`${color.fg}${HEX}${color.reset} ${name}${detail}`);
+	const line = fitLine(formatToolLine({ name, detail: toolDetail(args), state: 'run' }), Math.max(8, cols() - 1));
+	process.stdout.write(`${line}\n`);
+	toolArmed = Boolean(process.stdout.isTTY) && !plainMode;
 	stepOpen = true;
 }
 
-export function writeToolResult(_name, ok, preview) {
-	if (plainMode) {
-		const mark = ok === false ? 'failed' : 'ok';
-		const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 5);
-		console.log(scrubPlain(lines.length ? `Result: ${mark} - ${lines[0]}` : `Result: ${mark}`));
-		for (const l of lines.slice(1)) console.log(`  ${scrubPlain(l)}`);
+export function writeToolResult(name, ok, preview, extra = {}) {
+	const detail = toolDetail(extra.args || {}) || '';
+	const line = fitLine(
+		formatToolLine({ name, detail, state: ok ? 'ok' : 'fail' }),
+		Math.max(8, cols() - 1),
+	);
+	if (toolArmed) process.stdout.write(`\x1b[1A\r\x1b[2K${line}\n`);
+	else process.stdout.write(`${line}\n`);
+	toolArmed = false;
+	stepOpen = true;
+	if (!ok) {
+		const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 8);
+		for (const l of lines) {
+			const text = plainMode ? `  ${scrubPlain(l)}` : `  ${color.hint}${truncate(l, cols() - 4)}${color.reset}`;
+			process.stdout.write(`${text}\n`);
+		}
 		return;
 	}
-	const mark = ok === false ? `${color.red}✗${color.reset}` : `${color.green}✓${color.reset}`;
-	const lines = String(preview ?? '').split('\n').filter(Boolean).slice(0, 5);
-	if (!lines.length) {
-		console.log(`${color.muted}  ${HEX}${color.reset} ${mark}`);
-		return;
-	}
-	console.log(`${color.accent}  ${HEX}${color.reset} ${mark} ${color.muted}${truncate(lines[0], cols() - 10)}${color.reset}`);
-	for (const l of lines.slice(1)) {
-		console.log(`${color.muted}    ${truncate(l, cols() - 6)}${color.reset}`);
-	}
+	const diff = formatFileDiff(detail || name, extra.diff);
+	if (diff) process.stdout.write(`${diff}\n`);
 }
 
 export function writeAssistantDelta(delta) {
+	disarmToolRow();
 	if (!streaming) {
 		if (stepOpen) process.stdout.write('\n');
 		process.stdout.write('\n');
 		streaming = true;
 		stepOpen = false;
+		replyRenderer = createReplyRenderer();
 	}
-	process.stdout.write(String(delta ?? ''));
+	const out = replyRenderer.push(String(delta ?? ''));
+	if (out) process.stdout.write(out);
 }
 
 export function endAssistantStream() {
 	if (streaming) {
+		finishReplyHold();
 		process.stdout.write('\n');
 		streaming = false;
 	} else if (stepOpen) {
 		process.stdout.write('\n');
 	}
 	stepOpen = false;
+	toolArmed = false;
 }
 
 export function writeError(message) {
+	disarmToolRow();
 	if (streaming) {
+		finishReplyHold();
 		process.stdout.write('\n');
 		streaming = false;
 	}
 	console.log('');
-	console.log(box(wrapText(message, cols() - 4), { label: 'Error' }));
+	console.log(box(wrapText(message, cols() - 4), { label: 'Error', tone: 'error' }));
 	console.log('');
 	stepOpen = false;
 }
 
 export function writeStep(label, detail = '') {
+	disarmToolRow();
 	if (plainMode) {
 		console.log(scrubPlain(detail ? `${label} - ${detail}` : label));
 		stepOpen = true;
 		return;
 	}
-	const tip = detail ? `${color.muted} ${DOT} ${detail}${color.reset}` : '';
-	console.log(`${color.fg}${HEX}${color.reset} ${label}${tip}`);
+	const tip = detail ? `  ${color.hint}${detail}${color.reset}` : '';
+	console.log(`${color.clay}▪${color.reset} ${label}${tip}`);
 	stepOpen = true;
 }
 
+export function toneMark(ok) {
+	if (ok === true) return `${color.sage}✓${color.reset}`;
+	if (ok === false) return `${color.clay}✗${color.reset}`;
+	return `${color.hint}${DOT}${color.reset}`;
+}
+
 export function modelListText(activeModel, installed = []) {
+	const activeId = String(activeModel).replace(/^ollama\//, '');
 	if (plainMode) {
 		const rows = [`Active: ${scrubPlain(activeModel)}`];
 		if (!installed.length) rows.push('None installed. Run: ollama pull qwen2.5:3b');
-		else for (const tag of installed) rows.push(scrubPlain(tag));
+		else {
+			for (const tag of installed) rows.push(scrubPlain(tag === activeId ? `${tag} (active)` : tag));
+		}
 		return `\n${box(rows, { label: 'Models' })}\n`;
 	}
-	const rows = [`active ${DOT} ${activeModel}`, ''];
-	const activeId = String(activeModel).replace(/^ollama\//, '');
+	const rows = [`${color.hint}active${color.reset}  ${color.bold}${color.clay}${scrubPlain(activeModel)}${color.reset}`, ''];
 	if (!installed.length) {
-		rows.push('(none installed — ollama pull qwen2.5:3b)');
+		rows.push(`${color.hint}none installed. ollama pull qwen2.5:3b${color.reset}`);
 	} else {
 		for (const tag of installed) {
 			const active = tag === activeId;
-			rows.push(`${active ? `${color.accent}${HEX}${color.reset}` : `${color.muted}${HEX}${color.reset}`} ${tag}`);
+			rows.push(active
+				? `${color.clay}▸${color.reset} ${color.bold}${color.clay}${tag}${color.reset} ${color.sage}✓${color.reset}`
+				: `  ${tag}`);
 		}
 	}
 	return `\n${box(rows, { label: 'Models' })}\n`;
+}
+
+export function statusText(pairs) {
+	const col = Math.max(1, ...pairs.map(([key]) => displayWidth(key))) + 2;
+	const rows = pairs.map(([key, value]) => {
+		const paintedKey = `${color.hint}${key}${color.reset}`;
+		const painted = plainMode ? scrubPlain(String(value ?? '')) : String(value ?? '');
+		return `${paintedKey}${' '.repeat(col - displayWidth(key))}${painted}`;
+	});
+	return `\n${box(rows, { label: 'Status' })}\n`;
+}
+
+export function historyLine(title, meta) {
+	const name = plainMode ? scrubPlain(title) : String(title ?? '');
+	const detail = plainMode ? scrubPlain(meta) : `${color.hint}${meta}${color.reset}`;
+	return `${name}  ${detail}`;
+}
+
+function createReplyRenderer() {
+	let hold = '';
+	let mode = 'text';
+	let openStyle = false;
+
+	function styleOn(code) {
+		openStyle = true;
+		return code;
+	}
+	function styleOff() {
+		if (!openStyle) return '';
+		openStyle = false;
+		return color.reset;
+	}
+	function markerAt(text) {
+		let best = -1;
+		let which = '';
+		for (const mark of ['```', '**', '`']) {
+			const i = text.indexOf(mark);
+			if (i !== -1 && (best === -1 || i < best)) {
+				best = i;
+				which = mark;
+			}
+		}
+		return { index: best, mark: which };
+	}
+	function holdTail(text) {
+		if (text.endsWith('``')) return 2;
+		if (text.endsWith('`') || text.endsWith('*')) return 1;
+		return 0;
+	}
+	function bar(line) {
+		if (plainMode) return `${line}\n`;
+		return `${color.hint}│${color.reset} ${line}\n`;
+	}
+
+	return {
+		push(delta) {
+			hold += String(delta ?? '');
+			let out = '';
+			while (hold.length) {
+				if (mode === 'text') {
+					const found = markerAt(hold);
+					if (found.index === -1) {
+						const tail = holdTail(hold);
+						out += hold.slice(0, hold.length - tail);
+						hold = hold.slice(hold.length - tail);
+						break;
+					}
+					out += hold.slice(0, found.index);
+					hold = hold.slice(found.index);
+					if (found.mark === '```') {
+						const nl = hold.indexOf('\n');
+						if (nl === -1) break;
+						mode = 'fence';
+						hold = hold.slice(nl + 1);
+						if (out && !out.endsWith('\n')) out += '\n';
+						continue;
+					}
+					if (found.mark === '**') {
+						mode = 'bold';
+						hold = hold.slice(2);
+						out += styleOn(color.bold);
+						continue;
+					}
+					mode = 'code';
+					hold = hold.slice(1);
+					out += styleOn(color.clay);
+					continue;
+				}
+				if (mode === 'bold') {
+					const i = hold.indexOf('**');
+					if (i === -1) {
+						if (hold.endsWith('*')) {
+							out += hold.slice(0, -1);
+							hold = '*';
+						} else {
+							out += hold;
+							hold = '';
+						}
+						break;
+					}
+					out += hold.slice(0, i) + styleOff();
+					hold = hold.slice(i + 2);
+					mode = 'text';
+					continue;
+				}
+				if (mode === 'code') {
+					const i = hold.indexOf('`');
+					if (i === -1) {
+						out += hold;
+						hold = '';
+						break;
+					}
+					out += hold.slice(0, i) + styleOff();
+					hold = hold.slice(i + 1);
+					mode = 'text';
+					continue;
+				}
+				const nl = hold.indexOf('\n');
+				if (nl === -1) break;
+				const line = hold.slice(0, nl);
+				hold = hold.slice(nl + 1);
+				if (/^```[ \t]*$/.test(line)) {
+					mode = 'text';
+					continue;
+				}
+				out += bar(line);
+			}
+			return out;
+		},
+		finish() {
+			let out = '';
+			if (mode === 'fence') {
+				if (hold && !/^```[ \t]*$/.test(hold)) out += bar(hold);
+				hold = '';
+				mode = 'text';
+				return out;
+			}
+			out += hold;
+			hold = '';
+			if (mode !== 'text') out += styleOff();
+			mode = 'text';
+			return out;
+		},
+		reset() {
+			const tail = styleOff();
+			hold = '';
+			mode = 'text';
+			return tail;
+		},
+	};
+}
+
+export function renderReply(text) {
+	const renderer = createReplyRenderer();
+	return renderer.push(text) + renderer.finish();
 }
 
 export function boxDoctor(rows) {
@@ -439,7 +778,10 @@ export function boxDoctor(rows) {
 
 function alignRows(pairs) {
 	const col = Math.max(...pairs.map(([cmd]) => displayWidth(cmd))) + 2;
-	return pairs.map(([cmd, desc]) => `${cmd}${' '.repeat(col - displayWidth(cmd))}${desc}`);
+	return pairs.map(([cmd, desc]) => {
+		const description = `${color.hint}${desc}${color.reset}`;
+		return `${cmd}${' '.repeat(col - displayWidth(cmd))}${description}`;
+	});
 }
 
 export function helpText() {
@@ -448,8 +790,8 @@ export function helpText() {
 	return [
 		'',
 		box([
-			'Copix CLI — standalone agent for macOS, Windows, and Linux',
-			'Same tools as Copix Desktop · no account required',
+			`${color.bold}Copix CLI${color.reset} — standalone agent for macOS, Windows, and Linux`,
+			`${color.hint}Same tools as Copix Desktop · no account required${color.reset}`,
 			'',
 			...alignRows([
 				['copix', 'interactive REPL'],
@@ -474,10 +816,10 @@ export function helpText() {
 				['/exit', 'quit'],
 			]),
 			'',
-			'↑↓ recalls earlier lines · tab completes a / command',
-			'Ctrl+C clears the line · Ctrl+C on an empty line quits',
+			`${color.hint}↑↓ recalls earlier lines · tab completes a / command${color.reset}`,
+			`${color.hint}Ctrl+C clears the line · Ctrl+C on an empty line quits${color.reset}`,
 			'',
-			'Tools: create_project write_file edit_file append_file',
+			`${color.bold}Tools${color.reset}: create_project write_file edit_file append_file`,
 			'       delete_file read_file list_dir grep terminal',
 			'       web_search web_fetch multitask spawn_subagent',
 			'',
@@ -495,7 +837,7 @@ export function keysText() {
 	return [
 		'',
 		box([
-			'Prompt',
+			`${color.bold}Prompt${color.reset}`,
 			'Enter          submit the line',
 			'Up / Down      slash menu, or earlier lines when it is closed',
 			'Tab            complete the highlighted command',
@@ -506,13 +848,13 @@ export function keysText() {
 			'Ctrl+C         clear the line; quit when it is already empty',
 			'Ctrl+D         quit when the line is empty',
 			'',
-			'Model picker (/model)',
+			`${color.bold}Model picker (/model)${color.reset}`,
 			'Up / Down, j / k    move',
 			'1-9                 jump to that row',
 			'Enter               choose the highlighted model',
 			'Esc, Ctrl+C         cancel and keep the current model',
 			'',
-			'Plain text (/plain)',
+			`${color.bold}Plain text (/plain)${color.reset}`,
 			'The prompt is a normal line. /model asks for a',
 			'number or a model name. Empty Enter cancels.',
 			'Ctrl+C clears the line there too, and quits',
