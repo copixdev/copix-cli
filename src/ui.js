@@ -419,6 +419,9 @@ let streaming = false;
 let stepOpen = false;
 let toolArmed = false;
 let replyRenderer = createReplyRenderer();
+let thinkingTimer = null;
+let thinkingSpinning = false;
+let thinkingAnnounced = false;
 
 function toolDetail(args = {}) {
 	return String(args.path || args.url || args.query || args.command || args.pattern || args.name || args.summary || '');
@@ -476,7 +479,166 @@ export function resetReplyStyle() {
 	replyRenderer = createReplyRenderer();
 }
 
+/** Animation cap. Slower than this stutters over SSH; faster than this fights streamed tokens. */
+export const THINKING_FRAME_MS = 80;
+/** One left-to-right pass across "thinking". */
+export const THINKING_LOOP_MS = 1000;
+const THINKING_WORD = 'thinking';
+const THINKING_WIDTH = 3;
+
+let thinkingCancel = null;
+let thinkingDrawn = '';
+let thinkingWrite = (chunk) => process.stdout.write(chunk);
+let thinkingColumns = () => process.stdout.columns || 80;
+let thinkingNow = () => Date.now();
+let thinkingStarted = 0;
+let thinkingLastPaint = -Infinity;
+let thinkingCursorHidden = false;
+let thinkingHooksBound = false;
+
+function bindThinkingHooks() {
+	if (thinkingHooksBound) return;
+	thinkingHooksBound = true;
+	process.stdout.on('resize', () => {
+		if (thinkingSpinning) paintThinking(true);
+	});
+	process.on('exit', () => {
+		try { releaseThinking(); } catch { /* the stream may already be closed */ }
+	});
+}
+
+/** 0 at the gray edges, 1 at the clay center. The window is about three letters wide. */
+export function thinkingWeight(index, phase, length = THINKING_WORD.length) {
+	const p = ((Number(phase) % 1) + 1) % 1;
+	const center = p * (length + THINKING_WIDTH) - THINKING_WIDTH / 2;
+	const dist = Math.abs(index - center);
+	const t = Math.max(0, 1 - dist / (THINKING_WIDTH / 2));
+	return t * t * (3 - 2 * t);
+}
+
+export function thinkingLetterRgb(index, phase, length = THINKING_WORD.length) {
+	const weight = thinkingWeight(index, phase, length);
+	return RGB.hint.map((channel, i) => Math.round(channel + (RGB.clay[i] - channel) * weight));
+}
+
+/**
+ * Clay mark, then "thinking" with a three-letter clay highlight sweeping left to right.
+ * Plain mode is the static line, with no color and no mark.
+ */
+export function formatThinkingLine({ phase = 0, seconds = 0 } = {}) {
+	if (plainMode) return 'Thinking\u2026';
+	const letters = [...THINKING_WORD].map((ch, index) => {
+		const rgb = thinkingLetterRgb(index, phase);
+		return `${paint(38, rgb)}${ch}`;
+	}).join('');
+	const secs = Math.max(0, Math.floor(Number(seconds) || 0));
+	return `${color.clay}\u25aa${color.reset} ${letters}${color.reset}  ${color.hint}${secs}s${color.reset}`;
+}
+
+function paintThinking(force = false) {
+	if (!thinkingSpinning) return;
+	const now = thinkingNow();
+	if (!force && now - thinkingLastPaint < THINKING_FRAME_MS) return;
+	thinkingLastPaint = now;
+	const elapsed = Math.max(0, now - thinkingStarted);
+	const columns = Math.max(1, Number(thinkingColumns()) || 80);
+	const line = fitLine(
+		formatThinkingLine({
+			phase: (elapsed % THINKING_LOOP_MS) / THINKING_LOOP_MS,
+			seconds: Math.floor(elapsed / 1000),
+		}),
+		Math.max(1, columns - 1),
+	);
+	if (!thinkingCursorHidden) {
+		thinkingCursorHidden = true;
+		thinkingWrite(`${ESC}?25l`);
+	}
+	if (thinkingDrawn) {
+		const rows = wrappedRowCount([thinkingDrawn], columns);
+		thinkingWrite(rows > 1 ? `${ESC}${rows}A${ESC}J` : `\r${ESC}2K`);
+	} else {
+		thinkingWrite(`\r${ESC}2K`);
+	}
+	thinkingWrite(line);
+	thinkingDrawn = line;
+}
+
+/** Erase the thinking line and show the cursor. No-op when the static line was used. */
+function releaseThinking() {
+	if (thinkingCancel) {
+		thinkingCancel();
+		thinkingCancel = null;
+	}
+	if (thinkingTimer) {
+		clearInterval(thinkingTimer);
+		thinkingTimer = null;
+	}
+	const active = thinkingSpinning || thinkingDrawn || thinkingCursorHidden;
+	thinkingSpinning = false;
+	if (!active) return;
+	if (thinkingDrawn) {
+		const columns = Math.max(1, Number(thinkingColumns()) || 80);
+		const rows = wrappedRowCount([thinkingDrawn], columns);
+		thinkingWrite(rows > 1 ? `${ESC}${rows}A${ESC}J` : `\r${ESC}2K`);
+		thinkingDrawn = '';
+	} else {
+		thinkingWrite(`\r${ESC}2K`);
+	}
+	if (thinkingCursorHidden) {
+		thinkingCursorHidden = false;
+		thinkingWrite(`${ESC}?25h`);
+	}
+}
+
+/**
+ * Start the thinking line.
+ * A live terminal sweeps a clay highlight across the word.
+ * Plain mode, NO_COLOR, and non-TTY output print one static line and never animate.
+ */
+export function startThinking(opts = {}) {
+	const tty = opts.tty !== undefined ? Boolean(opts.tty) : Boolean(process.stdout.isTTY);
+	if (plainMode || !tty) {
+		if (thinkingAnnounced) return;
+		thinkingAnnounced = true;
+		console.log('Thinking\u2026');
+		return;
+	}
+	if (thinkingSpinning) return;
+	thinkingWrite = typeof opts.write === 'function' ? opts.write : (chunk) => process.stdout.write(chunk);
+	thinkingColumns = typeof opts.columns === 'function' ? opts.columns : () => process.stdout.columns || 80;
+	thinkingNow = typeof opts.now === 'function' ? opts.now : () => Date.now();
+	const schedule = typeof opts.schedule === 'function' ? opts.schedule : (fn, ms) => {
+		const id = setInterval(fn, ms);
+		if (typeof id.unref === 'function') id.unref();
+		return () => clearInterval(id);
+	};
+	bindThinkingHooks();
+	thinkingStarted = thinkingNow();
+	thinkingLastPaint = -Infinity;
+	thinkingDrawn = '';
+	thinkingSpinning = true;
+	paintThinking(true);
+	thinkingCancel = schedule(() => paintThinking(false), THINKING_FRAME_MS) || null;
+}
+
+/** Clear a live thinking line and restore the cursor. Plain mode emits nothing. */
+export function stopThinking() {
+	releaseThinking();
+}
+
+/** Allow the next turn to print the static thinking line again. */
+export function resetThinking() {
+	stopThinking();
+	thinkingAnnounced = false;
+}
+
+/** Repaint after a terminal resize so a wrapped thinking line does not linger. */
+export function notifyThinkingResize() {
+	if (thinkingSpinning) paintThinking(true);
+}
+
 export function writeModelLine(modelId, reason) {
+	stopThinking();
 	disarmToolRow();
 	if (plainMode) {
 		console.log(scrubPlain(reason ? `Model: ${modelId} (${reason})` : `Model: ${modelId}`));
@@ -488,11 +650,32 @@ export function writeModelLine(modelId, reason) {
 	stepOpen = true;
 }
 
-export function writeStatus(message) {
+/**
+ * Agent rounds announce the active tag as "qwen2.5:3b…". A color TTY overwrites
+ * the thinking line in place. Plain mode, NO_COLOR, and non-TTY would print a
+ * second line that is only the tag, so those paths get an ASCII label.
+ */
+export function formatQuietModelStatus(message, { plain = true, tty = false } = {}) {
+	if (!(plain || !tty)) return '';
+	const clean = String(message ?? '').replace(/\s+/g, ' ').trim();
+	const match = clean.match(/^(\S+?)(?:\u2026|\.{3})$/);
+	if (!match) return '';
+	return `Loading ${match[1]}...`;
+}
+
+export function writeStatus(message, opts = {}) {
+	stopThinking();
 	if (!message) return;
 	const clean = String(message).replace(/\s+/g, ' ').trim();
 	if (!clean) return;
 	disarmToolRow();
+	const tty = opts.tty !== undefined ? Boolean(opts.tty) : Boolean(process.stdout.isTTY);
+	const labeled = formatQuietModelStatus(clean, { plain: plainMode, tty });
+	if (labeled) {
+		console.log(labeled);
+		stepOpen = true;
+		return;
+	}
 	if (plainMode) {
 		console.log(scrubPlain(clean));
 		stepOpen = true;
@@ -503,6 +686,7 @@ export function writeStatus(message) {
 }
 
 export function writeToolCall(name, args = {}) {
+	stopThinking();
 	toolArmed = false;
 	if (streaming) {
 		finishReplyHold();
@@ -516,6 +700,7 @@ export function writeToolCall(name, args = {}) {
 }
 
 export function writeToolResult(name, ok, preview, extra = {}) {
+	stopThinking();
 	const detail = toolDetail(extra.args || {}) || '';
 	const line = fitLine(
 		formatToolLine({ name, detail, state: ok ? 'ok' : 'fail' }),
@@ -538,6 +723,7 @@ export function writeToolResult(name, ok, preview, extra = {}) {
 }
 
 export function writeAssistantDelta(delta) {
+	stopThinking();
 	disarmToolRow();
 	if (!streaming) {
 		if (stepOpen) process.stdout.write('\n');
@@ -551,6 +737,7 @@ export function writeAssistantDelta(delta) {
 }
 
 export function endAssistantStream() {
+	stopThinking();
 	if (streaming) {
 		finishReplyHold();
 		process.stdout.write('\n');
@@ -562,7 +749,29 @@ export function endAssistantStream() {
 	toolArmed = false;
 }
 
+/**
+ * Friendlier wording for a failed turn. The text is rendered by the existing Error box.
+ */
+export function explainError(message) {
+	const raw = String(message ?? '').trim() || 'The request failed.';
+	const text = raw.toLowerCase();
+	if (/abort|cancell?ed/.test(text)) {
+		return 'Stopped before the reply finished. Send the prompt again when you want to continue.';
+	}
+	if (/econnrefused|econnreset|fetch failed|enotfound|eai_again|socket hang up|other side closed/.test(text)) {
+		return `Ollama is not reachable. Start Ollama, then run /doctor. Install a model with /pull qwen2.5:3b.\n${raw}`;
+	}
+	if (/404|model_not_found/.test(text) || (/model/.test(text) && /not found/.test(text))) {
+		return `That model is not installed. Run /pull with the tag, or pick another with /model.\n${raw}`;
+	}
+	if (/timed?\s*out|\btimeout\b/.test(text)) {
+		return `The model took too long to answer. Try a smaller model with /model, or send the prompt again.\n${raw}`;
+	}
+	return `${raw}\nRun /doctor if this keeps happening.`;
+}
+
 export function writeError(message) {
+	stopThinking();
 	disarmToolRow();
 	if (streaming) {
 		finishReplyHold();
@@ -570,12 +779,13 @@ export function writeError(message) {
 		streaming = false;
 	}
 	console.log('');
-	console.log(box(wrapText(message, cols() - 4), { label: 'Error', tone: 'error' }));
+	console.log(box(wrapText(explainError(message), cols() - 4), { label: 'Error', tone: 'error' }));
 	console.log('');
 	stepOpen = false;
 }
 
 export function writeStep(label, detail = '') {
+	stopThinking();
 	disarmToolRow();
 	if (plainMode) {
 		console.log(scrubPlain(detail ? `${label} - ${detail}` : label));
@@ -591,6 +801,57 @@ export function toneMark(ok) {
 	if (ok === true) return `${color.sage}✓${color.reset}`;
 	if (ok === false) return `${color.clay}✗${color.reset}`;
 	return `${color.hint}${DOT}${color.reset}`;
+}
+
+/** Unknown-command hint: dim gray sentence, suggested command in clay. */
+export function formatTypoHint(command, suggestions = []) {
+	const cmd = String(command || '');
+	const list = (Array.isArray(suggestions) ? suggestions : []).map((item) => String(item || '')).filter(Boolean);
+	if (plainMode) {
+		if (!list.length) return scrubPlain(`Unknown command: ${cmd}. Try /help.`);
+		return scrubPlain(`Unknown command: ${cmd}. Did you mean ${list.join(' or ')}?`);
+	}
+	const gray = (text) => `${color.hint}${text}${color.reset}`;
+	const clayText = (text) => `${color.clay}${text}${color.reset}`;
+	if (!list.length) return `${gray(`Unknown command: ${cmd}. Try `)}${clayText('/help')}${gray('.')}`;
+	const painted = list.map(clayText).join(gray(' or '));
+	return `${gray(`Unknown command: ${cmd}. Did you mean `)}${painted}${gray('?')}`;
+}
+
+export function estimateTokens(chars) {
+	const n = Math.max(0, Number(chars) || 0);
+	return Math.ceil(n / 4);
+}
+
+export function contextReport(history = []) {
+	const messages = Array.isArray(history) ? history : [];
+	const characters = messages.reduce((sum, msg) => sum + String(msg?.content ?? '').length, 0);
+	return {
+		turns: Math.floor(messages.length / 2),
+		messages: messages.length,
+		characters,
+		tokens: estimateTokens(characters),
+	};
+}
+
+export function contextText(report) {
+	const col = 12;
+	const pair = (key, value) => {
+		const paintedKey = `${color.hint}${key}${color.reset}`;
+		const gap = ' '.repeat(Math.max(1, col - displayWidth(key)));
+		return `${paintedKey}${gap}${value}`;
+	};
+	const tokens = Number(report?.tokens) || 0;
+	const rows = [
+		pair('turns', String(report?.turns ?? 0)),
+		pair('messages', String(report?.messages ?? 0)),
+		pair('characters', String(report?.characters ?? 0)),
+		pair('estimate', `~${tokens} token${tokens === 1 ? '' : 's'}`),
+		'',
+		'Rough count, about 4 characters per token.',
+		'This is the chat so far, not the system prompt.',
+	];
+	return `\n${box(rows, { label: 'Context' })}\n`;
 }
 
 export function modelListText(activeModel, installed = []) {
@@ -793,6 +1054,7 @@ export function helpText() {
 			`${color.bold}Copix CLI${color.reset} — standalone agent for macOS, Windows, and Linux`,
 			`${color.hint}Same tools as Copix Desktop · no account required${color.reset}`,
 			'',
+			`${color.bold}Start${color.reset}`,
 			...alignRows([
 				['copix', 'interactive REPL'],
 				['copix "prompt"', 'one-shot'],
@@ -800,24 +1062,42 @@ export function helpText() {
 				['copix doctor', 'environment check'],
 			]),
 			'',
+			`${color.bold}Model${color.reset}`,
 			...alignRows([
 				['/model [tag|auto]', 'pick a model, or pin a tag / auto'],
 				['/models', 'list installed Ollama tags'],
 				['/pull <tag>', 'download a model'],
-				['/cwd [path]', 'show or change workspace (saved)'],
-				['/status', 'ollama · model · workspace · paths'],
-				['/doctor', 'Node, Ollama, models, paths'],
-				['/history', 'recent sessions (Desktop sync)'],
+			]),
+			'',
+			`${color.bold}Session${color.reset}`,
+			...alignRows([
+				['/context', 'turns and estimated tokens'],
+				['/copy', 'copy the last reply'],
+				['/undo', 'restore the last file edit'],
 				['/new', 'fresh conversation'],
 				['/clear', 'wipe screen + fresh conversation'],
-				['/keys', 'keyboard shortcuts'],
-				['/plain [on|off]', 'screen-reader text, no color or boxes'],
-				['/help', 'show this help'],
+				['/history', 'recent sessions (Desktop sync)'],
 				['/exit', 'quit'],
 			]),
 			'',
-			`${color.hint}↑↓ recalls earlier lines · tab completes a / command${color.reset}`,
-			`${color.hint}Ctrl+C clears the line · Ctrl+C on an empty line quits${color.reset}`,
+			`${color.bold}Workspace${color.reset}`,
+			...alignRows([
+				['/cwd [path]', 'show or change workspace (saved)'],
+				['/status', 'ollama, model, workspace, paths'],
+				['/doctor', 'Node, Ollama, models, paths'],
+			]),
+			'',
+			`${color.bold}Display${color.reset}`,
+			...alignRows([
+				['/keys', 'keyboard shortcuts'],
+				['/plain [on|off]', 'screen-reader text, no color or boxes'],
+				['/help', 'show this help'],
+			]),
+			'',
+			`${color.hint}Up and down recall earlier lines. Tab completes a / command.${color.reset}`,
+			`${color.hint}A mistyped / command suggests the nearest match.${color.reset}`,
+			`${color.hint}Ctrl+J, or a trailing \\ then Enter, continues on the next line.${color.reset}`,
+			`${color.hint}Ctrl+C clears the line. Ctrl+C on an empty line quits.${color.reset}`,
 			'',
 			`${color.bold}Tools${color.reset}: create_project write_file edit_file append_file`,
 			'       delete_file read_file list_dir grep terminal',
@@ -839,7 +1119,9 @@ export function keysText() {
 		box([
 			`${color.bold}Prompt${color.reset}`,
 			'Enter          submit the line',
-			'Up / Down      slash menu, or earlier lines when it is closed',
+			'Ctrl+J         insert a new line',
+			'\\ then Enter   continue on the next line',
+			'Up / Down      slash menu, an earlier line, or history',
 			'Tab            complete the highlighted command',
 			'Left / Right   move the cursor',
 			'Ctrl+A, Home   beginning of the line',
@@ -855,11 +1137,13 @@ export function keysText() {
 			'Esc, Ctrl+C         cancel and keep the current model',
 			'',
 			`${color.bold}Plain text (/plain)${color.reset}`,
-			'The prompt is a normal line. /model asks for a',
-			'number or a model name. Empty Enter cancels.',
-			'Ctrl+C clears the line there too, and quits',
-			'only when that line is already empty.',
-			'Set NO_COLOR to start in plain text next time.',
+			'The prompt is a normal line. A trailing',
+			'backslash then Enter continues on the next line.',
+			'/model asks for a number or a model name.',
+			'Empty Enter cancels. Ctrl+C clears the line',
+			'there too, and quits only when that line is',
+			'already empty. Set NO_COLOR to start in plain',
+			'text next time.',
 		], { label: 'Keys' }),
 		'',
 	].join('\n');

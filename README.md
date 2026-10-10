@@ -39,7 +39,7 @@ copix -p ~/sites "add a landing page"
 copix doctor                  # Node · Ollama · models · paths
 ```
 
-In the prompt, ↑ and ↓ recall earlier lines. Tab completes a slash command. Ctrl+C clears the line; Ctrl+C on an empty line quits. `/status` and `/doctor` print the settings and sessions paths for this machine. `/help` shows the install command and the settings path in that OS's usual form (`~/Copix` on macOS and Linux, `%USERPROFILE%\Copix` on Windows).
+In the prompt, ↑ and ↓ recall earlier lines. Tab completes a slash command. Ctrl+J, or a trailing `\` then Enter, continues on the next line. Ctrl+C clears the line; Ctrl+C on an empty line quits. A mistyped slash command suggests the nearest match. While a local model is working, a clay highlight sweeps across the word `thinking` about once a second, and the line shows elapsed seconds. `/status` and `/doctor` print the settings and sessions paths for this machine. `/help` groups commands and shows the install command and the settings path in that OS's usual form (`~/Copix` on macOS and Linux, `%USERPROFILE%\Copix` on Windows).
 
 ### Slash commands
 
@@ -51,6 +51,9 @@ In the prompt, ↑ and ↓ recall earlier lines. Tab completes a slash command. 
 | `/cwd [path]` | Show or change the workspace (saved as the default) |
 | `/status` | Ollama status, model, workspace, session info |
 | `/doctor` | Environment check |
+| `/context` | Turns, characters, and a rough token estimate for this chat |
+| `/copy` | Copy the last reply (or save it to `~/Copix/last-reply.txt` when the clipboard tool is missing) |
+| `/undo` | Restore the last file edit from this session |
 | `/history` | Recent agent sessions (synced with Desktop) |
 | `/new` | Fresh conversation, keep the screen |
 | `/clear` | Wipe screen + scrollback and start fresh |

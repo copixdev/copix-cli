@@ -5,7 +5,18 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { SLASH_COMMANDS } from '../src/input.js';
+import { copyText } from '../src/clipboard.js';
+import { applyUndo, snapshotFileEdit } from '../src/edits.js';
+import {
+	SLASH_COMMANDS,
+	continuedLine,
+	filteredCommands,
+	lineBoundary,
+	moveCursorVertically,
+	parseSubmission,
+	promptFrame,
+	suggestCommands,
+} from '../src/input.js';
 import {
 	initialModelIndex,
 	matchChoice,
@@ -22,6 +33,14 @@ import {
 	formatFileDiff,
 	formatStatusLine,
 	formatToolLine,
+	contextReport,
+	contextText,
+	explainError,
+	THINKING_FRAME_MS,
+	THINKING_LOOP_MS,
+	formatThinkingLine,
+	formatQuietModelStatus,
+	formatTypoHint,
 	helpText,
 	isPlain,
 	keysText,
@@ -29,11 +48,21 @@ import {
 	displayWidth,
 	printBanner,
 	renderReply,
+	notifyThinkingResize,
+	resetThinking,
 	setPlain,
+	startThinking,
+	stopThinking,
+	thinkingLetterRgb,
+	thinkingWeight,
 	repaintFrame,
 	startCardLines,
 	statusText,
 	termCols,
+	writeAssistantDelta,
+	writeError,
+	writeStatus,
+	writeToolCall,
 	wrappedRowCount,
 } from '../src/ui.js';
 
@@ -230,6 +259,12 @@ test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check mark
 				items: modelChoices({ installed: ['qwen'], selection: 'manual', modelId: 'qwen' }),
 				index: 1,
 			}).join('\n'),
+			formatThinkingLine({ seconds: 4, visible: true }),
+			formatThinkingLine({ seconds: 4, visible: false }),
+			formatTypoHint('/modle', ['/model']),
+			formatTypoHint('/nope', []),
+			contextText(contextReport([{ role: 'user', content: 'hello' }])),
+			explainError('connect ECONNREFUSED 127.0.0.1:11434'),
 		].join('\n');
 		assert.equal(surfaces.includes('\x1b'), false);
 		assert.doesNotMatch(surfaces, DECORATIVE);
@@ -241,7 +276,7 @@ test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check mark
 	}
 
 	const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
-		import { isPlain, helpText, keysText, startCardLines, formatStatusLine, formatToolLine, formatFileDiff, renderReply, modelListText, statusText } from './src/ui.js';
+		import { isPlain, helpText, keysText, startCardLines, formatStatusLine, formatToolLine, formatFileDiff, renderReply, modelListText, statusText, formatThinkingLine, formatTypoHint, contextText, contextReport, explainError, startThinking, writeStatus } from './src/ui.js';
 		import { renderPickerLines, modelChoices } from './src/select.js';
 		if (!isPlain()) process.exit(2);
 		const text = [
@@ -261,7 +296,30 @@ test('plain mode and NO_COLOR omit middle dots, arrows, hexagons, and check mark
 				items: modelChoices({ installed: ['qwen2.5:3b'], selection: 'manual', modelId: 'qwen2.5:3b' }),
 				index: 1,
 			}).join('\\n'),
+			formatThinkingLine({ seconds: 4, visible: true }),
+			formatThinkingLine({ seconds: 4, visible: false }),
+			formatTypoHint('/modle', ['/model']),
+			formatTypoHint('/nope', []),
+			contextText(contextReport([{ role: 'user', content: 'hello · world' }])),
+			explainError('connect ECONNREFUSED 127.0.0.1:11434'),
 		].join('\\n');
+		if (formatThinkingLine({ phase: 0.5, seconds: 4 }) !== 'Thinking\\u2026') process.exit(5);
+		const hint = formatTypoHint('/modle', ['/model']);
+		if (!hint.includes('/model') || !hint.includes('/modle') || hint.includes('\\x1b')) process.exit(6);
+		const logs = [];
+		const origLog = console.log;
+		console.log = (...args) => logs.push(args.join(' '));
+		startThinking();
+		startThinking();
+		console.log = origLog;
+		if (logs.length !== 1 || logs[0] !== 'Thinking\\u2026' || logs[0].includes('\\x1b')) process.exit(7);
+		const statusLogs = [];
+		console.log = (...args) => statusLogs.push(args.join(' '));
+		writeStatus('qwen2.5:3b\\u2026', { tty: true });
+		writeStatus('qwen2.5:3b\\u2026', { tty: false });
+		console.log = origLog;
+		const status = statusLogs.join('\\n');
+		if (status !== 'Loading qwen2.5:3b...\\nLoading qwen2.5:3b...' || status.includes('\\x1b') || /[·→⬢✓✗▪▸…]/.test(status)) process.exit(8);
 		if (text.includes('\\x1b')) process.exit(4);
 		if (/[·→⬢✓✗▪▸▀▄█▌▐]/.test(text)) process.exit(3);
 		process.stdout.write('plain-ok');
@@ -547,4 +605,374 @@ test('REPL help, model picker, and plain text commands', () => {
 	const settings = JSON.parse(fs.readFileSync(path.join(home, 'Copix', 'settings.json'), 'utf8'));
 	assert.equal(settings.model.selection, 'manual');
 	assert.equal(settings.model.modelId, 'qwen2.5:3b');
+});
+
+function hookStdout() {
+	const chunks = [];
+	const orig = process.stdout.write;
+	process.stdout.write = (chunk, enc, cb) => {
+		chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
+		if (typeof enc === 'function') enc();
+		else if (typeof cb === 'function') cb();
+		return true;
+	};
+	return {
+		chunks,
+		text: () => chunks.join(''),
+		restore() { process.stdout.write = orig; },
+	};
+}
+
+test('thinking highlight sweeps across the word in truecolor and 256-color', () => {
+	const prev = {
+		COLORTERM: process.env.COLORTERM,
+		WT_SESSION: process.env.WT_SESSION,
+		TERM_PROGRAM: process.env.TERM_PROGRAM,
+	};
+	delete process.env.WT_SESSION;
+	delete process.env.TERM_PROGRAM;
+	setPlain(false);
+	try {
+		assert.equal(thinkingWeight(4, 0.5), 1);
+		assert.ok(thinkingWeight(3, 0.5) > 0 && thinkingWeight(3, 0.5) < 1);
+		assert.ok(thinkingWeight(5, 0.5) > 0 && thinkingWeight(5, 0.5) < 1);
+		assert.equal(thinkingWeight(2, 0.5), 0);
+		assert.equal(thinkingWeight(6, 0.5), 0);
+		assert.equal(thinkingWeight(0, 0), 0);
+		assert.deepEqual(thinkingLetterRgb(4, 0.5), [196, 101, 74]);
+		assert.deepEqual(thinkingLetterRgb(0, 0.5), [125, 125, 125]);
+
+		process.env.COLORTERM = 'truecolor';
+		const mid = formatThinkingLine({ phase: 0.5, seconds: 2 });
+		assert.equal(formatThinkingLine({ phase: 0, seconds: 0 }), formatThinkingLine({ phase: 1, seconds: 0 }));
+		assert.match(mid, /\x1b\[38;2;196;101;74m▪/);
+		assert.match(mid, /\x1b\[38;2;196;101;74mk/);
+		assert.match(mid, /\x1b\[38;2;125;125;125mt/);
+		assert.match(mid, /2s/);
+		assert.doesNotMatch(mid, /\x1b\[1m/);
+		assert.doesNotMatch(mid, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+
+		delete process.env.COLORTERM;
+		const faded = formatThinkingLine({ phase: 0.5, seconds: 0 });
+		assert.match(faded, new RegExp(`38;5;${closestAnsi256(196, 101, 74)}m▪`));
+		assert.match(faded, new RegExp(`38;5;${closestAnsi256(196, 101, 74)}mk`));
+		assert.match(faded, new RegExp(`38;5;${closestAnsi256(125, 125, 125)}mt`));
+		assert.doesNotMatch(faded, /38;2;/);
+		assert.equal(THINKING_LOOP_MS, 1000);
+		assert.ok(THINKING_FRAME_MS >= 80);
+	} finally {
+		for (const [key, value] of Object.entries(prev)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		setPlain(false);
+		stopThinking();
+	}
+});
+
+test('thinking line clears before output and restores the cursor', () => {
+	const prev = process.env.COLORTERM;
+	process.env.COLORTERM = 'truecolor';
+	setPlain(false);
+	const out = hookStdout();
+	let now = 0;
+	let draw = null;
+	let frameMs = 0;
+	try {
+		startThinking({
+			tty: true,
+			now: () => now,
+			schedule(fn, ms) {
+				frameMs = ms;
+				draw = fn;
+				return () => { draw = null; };
+			},
+		});
+		assert.equal(frameMs, THINKING_FRAME_MS);
+		assert.match(out.text(), /\x1b\[\?25l/);
+		assert.match(stripAnsi(out.text()), /thinking/);
+		const afterFirst = out.chunks.length;
+		now = 40;
+		draw();
+		assert.equal(out.chunks.length, afterFirst);
+		now = THINKING_FRAME_MS;
+		draw();
+		assert.ok(out.chunks.length > afterFirst);
+
+		out.chunks.length = 0;
+		writeAssistantDelta('Hello');
+		const streamed = out.text();
+		const streamClear = streamed.search(/\x1b\[2K|\x1b\[J/);
+		const helloAt = streamed.indexOf('Hello');
+		assert.ok(streamClear !== -1 && helloAt !== -1 && streamClear < helloAt, streamed);
+		assert.doesNotMatch(streamed.slice(0, helloAt), /thinking/);
+		assert.doesNotMatch(visibleScreen(streamed), /thinking/);
+		assert.match(visibleScreen(streamed), /Hello/);
+		assert.match(streamed, /\x1b\[\?25h/);
+		stopThinking();
+
+		out.chunks.length = 0;
+		startThinking({
+			tty: true,
+			now: () => now,
+			schedule(fn, ms) {
+				frameMs = ms;
+				draw = fn;
+				return () => { draw = null; };
+			},
+		});
+		out.chunks.length = 0;
+		writeToolCall('edit_file', { path: 'a.js' });
+		const raw = out.text();
+		const clearAt = raw.search(/\x1b\[2K|\x1b\[J/);
+		const toolAt = raw.indexOf('edit_file');
+		assert.ok(clearAt !== -1 && toolAt !== -1 && clearAt < toolAt, raw);
+		assert.doesNotMatch(raw.slice(0, toolAt), /thinking/);
+		assert.doesNotMatch(visibleScreen(raw), /thinking/);
+		assert.match(visibleScreen(raw), /edit_file/);
+		assert.match(raw, /\x1b\[\?25h/);
+
+		now = 0;
+		out.chunks.length = 0;
+		startThinking({
+			tty: true,
+			now: () => now,
+			schedule() { return () => {}; },
+		});
+		out.chunks.length = 0;
+		writeError('connect ECONNREFUSED 127.0.0.1:11434');
+		const errorRaw = out.text();
+		const errorClear = errorRaw.search(/\x1b\[2K|\x1b\[J/);
+		const errorAt = errorRaw.indexOf('Error');
+		assert.ok(errorClear !== -1 && errorAt !== -1 && errorClear < errorAt, errorRaw);
+		assert.match(errorRaw, /\x1b\[\?25h/);
+		assert.doesNotMatch(errorRaw.slice(0, errorAt), /thinking/);
+		assert.doesNotMatch(visibleScreen(errorRaw), /thinking/);
+		assert.match(visibleScreen(errorRaw), /Ollama is not reachable/);
+
+		out.chunks.length = 0;
+		startThinking({
+			tty: true,
+			now: () => now,
+			schedule() { return () => {}; },
+		});
+		out.chunks.length = 0;
+		stopThinking();
+		const cancel = out.text();
+		assert.match(cancel, /\x1b\[2K|\x1b\[J/);
+		assert.match(cancel, /\x1b\[\?25h/);
+		assert.doesNotMatch(cancel, /thinking/);
+		assert.doesNotMatch(visibleScreen(cancel), /thinking/);
+	} finally {
+		stopThinking();
+		out.restore();
+		if (prev === undefined) delete process.env.COLORTERM;
+		else process.env.COLORTERM = prev;
+		setPlain(false);
+	}
+});
+
+test('thinking resize refits the line and plain or non-TTY stays static', () => {
+	setPlain(false);
+	const out = hookStdout();
+	let cols = 80;
+	try {
+		startThinking({
+			tty: true,
+			columns: () => cols,
+			now: () => 0,
+			schedule() { return () => {}; },
+		});
+		assert.match(stripAnsi(out.text()), /thinking/);
+		cols = 8;
+		out.chunks.length = 0;
+		notifyThinkingResize();
+		const narrow = out.text();
+		assert.match(narrow, /\x1b\[[2-9]A\x1b\[J/);
+		const screen = visibleScreen(narrow);
+		const last = screen.split('\n').filter((line) => line.trim()).pop() || '';
+		assert.ok(displayWidth(last) <= 8, JSON.stringify(last));
+		stopThinking();
+		assert.match(out.text(), /\x1b\[\?25h/);
+	} finally {
+		stopThinking();
+		out.restore();
+		setPlain(false);
+	}
+
+	setPlain(true);
+	try {
+		let scheduled = false;
+		const lines = captureLog(() => {
+			startThinking({
+				tty: true,
+				schedule() { scheduled = true; return () => {}; },
+			});
+			startThinking({ tty: true });
+		});
+		assert.equal(scheduled, false);
+		assert.deepEqual(lines, ['Thinking\u2026']);
+		assert.equal(lines.join('').includes('\x1b'), false);
+		stopThinking();
+	} finally {
+		resetThinking();
+		setPlain(false);
+	}
+
+	setPlain(false);
+	let scheduled = false;
+	const lines = captureLog(() => {
+		startThinking({
+			tty: false,
+			schedule() { scheduled = true; return () => {}; },
+		});
+		startThinking({ tty: false });
+	});
+	assert.equal(scheduled, false);
+	assert.deepEqual(lines, ['Thinking\u2026']);
+	assert.equal(lines.join('').includes('\x1b'), false);
+	assert.doesNotMatch(lines.join(''), /[·→⬢✓✗▪▸▀▄█▌▐⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+	resetThinking();
+});
+
+test('plain and non-TTY model status names the model it is loading', () => {
+	const tag = 'qwen2.5:3b\u2026';
+	const expectLine = 'Loading qwen2.5:3b...';
+	assert.equal(formatQuietModelStatus(tag, { plain: true, tty: true }), expectLine);
+	assert.equal(formatQuietModelStatus(tag, { plain: false, tty: false }), expectLine);
+	assert.equal(formatQuietModelStatus('qwen2.5:3b...', { plain: true, tty: false }), expectLine);
+	assert.equal(formatQuietModelStatus(tag, { plain: false, tty: true }), '');
+	assert.equal(formatQuietModelStatus('rate limited, then retrying\u2026', { plain: true, tty: false }), '');
+	assert.equal(expectLine.includes('\x1b'), false);
+	assert.doesNotMatch(expectLine, /[·→⬢✓✗▪▸…▀▄█▌▐]/);
+
+	setPlain(true);
+	try {
+		const plainLines = captureLog(() => {
+			writeStatus(tag, { tty: true });
+			writeStatus('compacting context', { tty: true });
+		});
+		assert.deepEqual(plainLines, [expectLine, 'compacting context']);
+	} finally {
+		setPlain(false);
+	}
+
+	const quietLines = captureLog(() => writeStatus(tag, { tty: false }));
+	assert.deepEqual(quietLines, [expectLine]);
+
+	const out = hookStdout();
+	try {
+		const colorLines = captureLog(() => writeStatus(tag, { tty: true }));
+		assert.deepEqual(colorLines, []);
+		assert.match(out.text(), /\r/);
+		assert.match(out.text(), /qwen2\.5:3b\u2026/);
+		assert.equal(out.text().includes('Loading'), false);
+	} finally {
+		out.restore();
+	}
+});
+
+test('commands, typo hints, context, copy, and undo', () => {
+	assert.equal(suggestCommands('/modle')[0], '/model');
+	assert.ok(suggestCommands('/modle').includes('/model'));
+	assert.deepEqual(suggestCommands('/model'), []);
+	assert.deepEqual(suggestCommands('/zzzz'), []);
+	assert.equal(filteredCommands('/mod').some((command) => command.cmd === '/model'), true);
+	assert.equal(filteredCommands('/odml').some((command) => command.cmd === '/model'), true);
+	assert.equal(continuedLine('keep going \\'), 'keep going \n');
+	assert.equal(continuedLine('keep going \\\\'), null);
+	assert.equal(moveCursorVertically('one\ntwo', 0, 1), 4);
+	assert.equal(lineBoundary('one\ntwo', 5, 'start'), 4);
+	assert.deepEqual(parseSubmission('hello\nworld'), { kind: 'prompt', text: 'hello\nworld', cmd: '', arg: '' });
+	assert.equal(parseSubmission('/cwd \\\n~/proj').cmd, '/cwd');
+	assert.equal(parseSubmission('exit').cmd, '/exit');
+
+	const frame = promptFrame({ buffer: 'one\ntwo', cursor: 4, width: 80, footer: ['ready'] });
+	for (const line of frame) assert.ok(displayWidth(line) <= 80, line);
+	assert.match(stripAnsi(frame.join('\n')), /one/);
+	assert.match(stripAnsi(frame.join('\n')), /two/);
+
+	setPlain(false);
+	const prev = process.env.COLORTERM;
+	process.env.COLORTERM = 'truecolor';
+	try {
+		const hint = formatTypoHint('/modle', ['/model']);
+		assert.match(hint, /38;2;125;125;125m/);
+		assert.match(hint, /38;2;196;101;74m\/model/);
+		assert.doesNotMatch(hint, /\x1b\[1m/);
+		const help = helpText();
+		assert.match(stripAnsi(help), /Model/);
+		assert.match(stripAnsi(help), /Session/);
+		assert.match(help, /\/context/);
+		assert.match(help, /\/copy/);
+		assert.match(help, /\/undo/);
+		for (const line of help.split('\n')) {
+			if (/^curl |^irm /.test(line)) continue;
+			assert.ok(displayWidth(line) <= termCols(), stripAnsi(line));
+		}
+	} finally {
+		if (prev === undefined) delete process.env.COLORTERM;
+		else process.env.COLORTERM = prev;
+	}
+
+	setPlain(true);
+	try {
+		const hint = formatTypoHint('/modle', ['/model']);
+		assert.equal(hint.includes('\x1b'), false);
+		assert.doesNotMatch(hint, DECORATIVE);
+		assert.match(hint, /\/modle/);
+		assert.match(hint, /\/model/);
+		const none = formatTypoHint('/zzzz', []);
+		assert.match(none, /\/help/);
+		assert.equal(none.includes('\x1b'), false);
+		const report = contextReport([
+			{ role: 'user', content: 'abcd' },
+			{ role: 'assistant', content: 'ef' },
+		]);
+		assert.equal(report.turns, 1);
+		assert.equal(report.characters, 6);
+		assert.equal(report.tokens, 2);
+		const context = contextText(report);
+		assert.equal(context.includes('\x1b'), false);
+		assert.doesNotMatch(context, DECORATIVE);
+		assert.match(context, /~2 tokens/);
+		assert.match(explainError('connect ECONNREFUSED 127.0.0.1:11434'), /\/doctor/);
+		const error = captureLog(() => writeError('connect ECONNREFUSED 127.0.0.1:11434'));
+		const errorText = error.join('\n');
+		assert.equal(errorText.includes('\x1b'), false);
+		assert.match(errorText, /Error:/);
+		assert.doesNotMatch(errorText, DECORATIVE);
+	} finally {
+		setPlain(false);
+	}
+
+	const copied = copyText('last reply', {
+		platform: 'linux',
+		run() { return { ok: false }; },
+		dest: path.join(os.tmpdir(), `copix-reply-${Date.now()}.txt`),
+		writeFile(file, data) {
+			fs.mkdirSync(path.dirname(file), { recursive: true });
+			fs.writeFileSync(file, data);
+		},
+	});
+	assert.equal(copied.via, 'file');
+	assert.match(fs.readFileSync(copied.path, 'utf8'), /last reply/);
+	const clip = copyText('hello', {
+		platform: 'win32',
+		run(cmd) { return { ok: cmd === 'clip' }; },
+	});
+	assert.equal(clip.command, 'clip');
+	assert.equal(copyText('   ').via, 'empty');
+
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copix-undo-'));
+	const file = path.join(dir, 'note.txt');
+	fs.writeFileSync(file, 'before');
+	const snap = snapshotFileEdit('edit_file', { path: file }, dir);
+	fs.writeFileSync(file, 'after');
+	assert.equal(applyUndo(snap).action, 'restored');
+	assert.equal(fs.readFileSync(file, 'utf8'), 'before');
+	const created = snapshotFileEdit('write_file', { path: path.join(dir, 'new.txt') }, dir);
+	fs.writeFileSync(created.path, 'new');
+	assert.equal(applyUndo(created).action, 'removed');
+	assert.equal(fs.existsSync(created.path), false);
 });

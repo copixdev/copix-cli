@@ -8,7 +8,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installNodeCopixApi } from './nodeApi.js';
 import * as ui from './ui.js';
-import { readPrompt } from './input.js';
+import { copyText } from './clipboard.js';
+import { applyUndo, snapshotFileEdit } from './edits.js';
+import { parseSubmission, readPrompt, suggestCommands } from './input.js';
 import { initialModelIndex, modelChoices, resolveModelChoice, selectOption } from './select.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -54,25 +56,36 @@ async function loadAgentModules() {
 	return { api, runAgent, resolveModelConfig };
 }
 
-function makeCallbacks(state) {
+function makeCallbacks(state, extras = {}) {
+	const undoStack = extras.undoStack || null;
+	const workspace = extras.workspace || (() => '');
+	let pending = null;
 	return {
 		onText: (chunk) => {
 			state.assistantText += chunk;
 			ui.writeAssistantDelta(chunk);
 		},
-		onThinkingStart: () => undefined,
+		onThinkingStart: () => {
+			ui.startThinking();
+		},
 		onThinkingChunk: (chunk) => {
 			const text = String(chunk || '').trim();
 			if (text) ui.writeStatus(text.replace(/^\(+|\)+$/g, ''));
 		},
 		onThinkingEnd: () => undefined,
 		onToolStart: (_id, tool, args) => {
+			pending = undoStack ? snapshotFileEdit(tool, args, workspace()) : null;
 			if (/write_file|edit_file|append_file|create_project|delete_file/.test(tool)) {
 				state.filesEdited += 1;
 			}
 			ui.writeToolCall(tool, args || {});
 		},
 		onToolEnd: (_id, tool, args, meta) => {
+			if (pending && undoStack && !toolFailed(meta)) {
+				undoStack.push(pending);
+				if (undoStack.length > 20) undoStack.shift();
+			}
+			pending = null;
 			const failed = toolFailed(meta);
 			const preview = String(meta?.result ?? meta?.error ?? '');
 			const clip = /web_search|web_fetch/.test(tool)
@@ -82,6 +95,7 @@ function makeCallbacks(state) {
 				args: args || {},
 				diff: failed ? null : meta?.diff,
 			});
+			ui.startThinking();
 		},
 		onStatus: (msg) => {
 			ui.writeStatus(msg);
@@ -200,6 +214,7 @@ async function runOne({
 	api,
 	settings,
 	installedModels,
+	undoStack = null,
 }) {
 	const state = { filesEdited: 0, assistantText: '' };
 	let config = resolveModelConfig(
@@ -224,8 +239,11 @@ async function runOne({
 	const ac = new AbortController();
 	const onSig = () => ac.abort();
 	process.on('SIGINT', onSig);
+	const callbacksFor = () => makeCallbacks(state, { undoStack, workspace: () => root });
 
 	ui.beginAssistant();
+	ui.resetThinking();
+	ui.startThinking();
 	try {
 		await runAgent(
 			prompt,
@@ -243,7 +261,7 @@ async function runOne({
 						{ sessionId: childId, workspaceRoot: root, isSubagent: true },
 						[],
 						ac.signal,
-						makeCallbacks(state),
+						callbacksFor(),
 						{ mode: settings.agentMode || 'code' },
 					);
 					return { sessionId: childId };
@@ -251,7 +269,7 @@ async function runOne({
 			},
 			history,
 			ac.signal,
-			makeCallbacks(state),
+			callbacksFor(),
 			{ mode: settings.agentMode || 'code' },
 		);
 		history.push({ role: 'user', content: prompt });
@@ -266,7 +284,9 @@ async function runOne({
 		const message = err instanceof Error ? err.message : String(err);
 		const missing = /404|not found|model_not_found/i.test(message);
 		if (missing && config.model !== FALLBACK_MODEL) {
+			ui.stopThinking();
 			ui.writeStep('Retrying', FALLBACK_MODEL);
+			ui.startThinking();
 			const retryConfig = { ...config, model: FALLBACK_MODEL };
 			await runAgent(
 				prompt,
@@ -278,7 +298,7 @@ async function runOne({
 				},
 				history,
 				ac.signal,
-				makeCallbacks(state),
+				callbacksFor(),
 				{ mode: settings.agentMode || 'code' },
 			);
 			history.push({ role: 'user', content: prompt });
@@ -292,6 +312,7 @@ async function runOne({
 		}
 		throw err;
 	} finally {
+		ui.stopThinking();
 		ui.endAssistantStream();
 		process.off('SIGINT', onSig);
 	}
@@ -361,6 +382,8 @@ async function repl(deps) {
 	let ollamaOk = false;
 	let session = newCliSession(workspaceRoot);
 	const promptHistory = [];
+	const undoStack = [];
+	let lastReply = '';
 
 	async function persistSettings() {
 		rawSettings = { ...rawSettings, model: { ...rawSettings.model, ...settings.model } };
@@ -408,6 +431,35 @@ async function repl(deps) {
 		}
 	}
 
+	async function ask(promptText) {
+		console.log('');
+		try {
+			const turn = await runOne({
+				prompt: promptText,
+				workspaceRoot,
+				history,
+				runAgent,
+				resolveModelConfig,
+				api,
+				settings,
+				installedModels: await installedTags(api),
+				undoStack,
+			});
+			workspaceRoot = turn.workspaceRoot;
+			lastModel = turn.model;
+			if (String(turn.assistantText || '').trim()) lastReply = turn.assistantText;
+			recordTurn(session, promptText, turn.assistantText);
+			session.workspaceRoot = workspaceRoot;
+			await persistSession(api, session);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			ui.writeError(message);
+			recordTurn(session, promptText, `Error: ${message}`);
+			await persistSession(api, session);
+		}
+		console.log('');
+	}
+
 	await printBannerNow();
 
 	while (true) {
@@ -416,14 +468,18 @@ async function repl(deps) {
 			history: promptHistory,
 		});
 		if (line === null) break;
-		if (!line) continue;
-		if (promptHistory[promptHistory.length - 1] !== line) promptHistory.push(line);
+		const parsed = parseSubmission(line);
+		if (parsed.kind === 'empty') continue;
+		if (promptHistory[promptHistory.length - 1] !== parsed.text) promptHistory.push(parsed.text);
 		if (promptHistory.length > 100) promptHistory.shift();
+		if (parsed.kind === 'prompt') {
+			await ask(parsed.text);
+			continue;
+		}
 
-		const [cmd, ...rest] = line.split(/\s+/);
-		const arg = rest.join(' ').trim();
+		const { cmd, arg } = parsed;
 
-		if (cmd === '/exit' || cmd === '/quit' || line === 'exit') break;
+		if (cmd === '/exit' || cmd === '/quit') break;
 
 		if (cmd === '/help' || cmd === '/?') {
 			console.log(ui.helpText());
@@ -513,7 +569,7 @@ async function repl(deps) {
 			info(`Pulling ${arg} — this can take a while…`);
 			const res = await api.pullOllamaModel(arg).catch((e) => ({ ok: false, message: String(e?.message || e) }));
 			if (res.ok) ok(`Pulled ${arg}`);
-			else warn(`Pull failed: ${res.message}`);
+			else warn(`Pull failed: ${res.message}. Run /doctor if Ollama is not running.`);
 			continue;
 		}
 
@@ -540,6 +596,43 @@ async function repl(deps) {
 		if (cmd === '/doctor') {
 			const result = await runDoctor(api, pkg.version, workspaceRoot);
 			ollamaOk = Boolean(result?.online);
+			continue;
+		}
+
+		if (cmd === '/context') {
+			console.log(ui.contextText(ui.contextReport(history)));
+			continue;
+		}
+
+		if (cmd === '/copy') {
+			const copied = copyText(lastReply);
+			if (copied.via === 'clipboard') ok('Copied the last reply.');
+			else if (copied.via === 'file') info(`No clipboard tool found. Saved the last reply to ${copied.path}`);
+			else info('No reply to copy yet.');
+			continue;
+		}
+
+		if (cmd === '/undo') {
+			const entry = undoStack.pop();
+			if (!entry) {
+				info('Nothing to undo yet. File edits from this session show up here.');
+				continue;
+			}
+			if (entry.tooBig) {
+				warn(`${entry.path} was too large to undo.`);
+				continue;
+			}
+			try {
+				const result = applyUndo(entry);
+				const left = undoStack.length;
+				const tail = left ? ` ${left} more edit${left === 1 ? '' : 's'} can be undone.` : '';
+				if (result.missing) info(`Already gone: ${result.path}`);
+				else if (result.action === 'removed') ok(`Removed ${result.path}.${tail}`);
+				else ok(`Restored ${result.path}.${tail}`);
+			} catch (err) {
+				undoStack.push(entry);
+				warn(`Could not undo ${entry.path}. ${err instanceof Error ? err.message : String(err)}`);
+			}
 			continue;
 		}
 
@@ -584,34 +677,7 @@ async function repl(deps) {
 			continue;
 		}
 
-		if (line.startsWith('/')) {
-			warn(`Unknown command: ${cmd} — try /help`);
-			continue;
-		}
-
-		console.log('');
-		try {
-			const turn = await runOne({
-				prompt: line,
-				workspaceRoot,
-				history,
-				runAgent,
-				resolveModelConfig,
-				api,
-				settings,
-				installedModels: await installedTags(api),
-			});
-			workspaceRoot = turn.workspaceRoot;
-			lastModel = turn.model;
-			recordTurn(session, line, turn.assistantText);
-			session.workspaceRoot = workspaceRoot;
-			await persistSession(api, session);
-		} catch (err) {
-			ui.writeError(err instanceof Error ? err.message : String(err));
-			recordTurn(session, line, `Error: ${err instanceof Error ? err.message : String(err)}`);
-			await persistSession(api, session);
-		}
-		console.log('');
+		console.log(`\n${ui.formatTypoHint(cmd, suggestCommands(cmd))}\n`);
 	}
 }
 
@@ -673,9 +739,9 @@ export async function main(argv) {
 	const installedModels = Array.isArray(status?.models) ? status.models.map(String) : [];
 
 	if (!status?.online) {
-		warn('Ollama is offline. Install from https://ollama.com, then: ollama pull qwen2.5:3b');
+		warn('Ollama is offline. Install it from https://ollama.com, run ollama pull qwen2.5:3b, then /doctor.');
 	} else if (!installedModels.length) {
-		warn(`No Ollama models yet. Run: ollama pull ${FALLBACK_MODEL}   or   /pull ${FALLBACK_MODEL}`);
+		warn(`No Ollama models yet. Run /pull ${FALLBACK_MODEL}.`);
 	}
 
 	if (opts.prompt) {
