@@ -272,9 +272,9 @@ export function dataDirLabel() {
 
 export function cliInstallCommand() {
 	if (process.platform === 'win32') {
-		return 'irm https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.ps1 | iex';
+		return 'irm https://raw.githubusercontent.com/copixdev/copix/refs/heads/main/cli/install.ps1 | iex';
 	}
-	return 'curl -fsSL https://raw.githubusercontent.com/copixdev/Copix/refs/heads/main/cli/install.sh | bash';
+	return 'curl -fsSL https://raw.githubusercontent.com/copixdev/copix/refs/heads/main/cli/install.sh | bash';
 }
 
 function box(lines, { label, tone } = {}) {
