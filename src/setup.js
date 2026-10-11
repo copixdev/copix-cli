@@ -304,7 +304,7 @@ export async function runSetup({
 		}
 	}
 
-	log(['4)', formatTips({ plain: checkPlain || isPlain() })].join('\n'));
+	log(['4) Tips', formatTips({ plain: checkPlain || isPlain() })].join('\n'));
 
 	const previous = settings?.model && typeof settings.model === 'object' ? settings.model : {};
 	let modelId = previous.modelId || recommendModel(totalMem).tag;

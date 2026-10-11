@@ -170,6 +170,7 @@ test('non-TTY setup prints checks and does not pull or prompt', async () => {
 	assert.match(text, /ollama pull qwen2\.5:3b/);
 	assert.match(text, /Recommended for 8 GB: qwen2\.5:3b \(about 2 GB\)/);
 	assert.match(text, /type a request/);
+	assert.match(text, /^4\) Tips$/m);
 	assert.equal(text.includes('\x1b'), false);
 	assert.doesNotMatch(text, DECORATIVE);
 	assert.equal(text.includes(SECRET), false);
@@ -222,26 +223,43 @@ test('--yes pulls only when Ollama is up and the model is missing', async () => 
 test('interactive Enter selects the defaults and an explicit n skips the pull', async () => {
 	const answers = ['', '', 'n'];
 	let pulled = 0;
-	const result = await runSetup({
-		settings: {},
-		tty: true,
-		totalMem: 8 * GB,
-		workspaceExists: true,
-		cliOnPath: true,
-		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
-		ask: async (prompt) => {
-			assert.match(prompt, /Choice \[1\]:|Pull it now\? \[Y\/n\]/);
-			return answers.shift();
-		},
-		askSecret: async () => SECRET,
-		pull: async () => { pulled += 1; return { ok: true }; },
-		applyDisplay() {},
-		write() {},
-	});
-	assert.equal(pulled, 0);
-	assert.equal(result.display, 'auto');
-	assert.equal(result.provider, 'ollama');
-	assert.equal(result.disk.model.apiKey, '');
+	const prevNo = process.env.NO_COLOR;
+	const prevColor = process.env.COLORTERM;
+	delete process.env.NO_COLOR;
+	process.env.COLORTERM = 'truecolor';
+	setPlain(false);
+	setAppearance('auto');
+	try {
+		const result = await runSetup({
+			settings: {},
+			tty: true,
+			totalMem: 8 * GB,
+			workspaceExists: true,
+			cliOnPath: true,
+			fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
+			ask: async (prompt) => {
+				assert.match(prompt, /Choice \[1\]:|Pull it now\? \[Y\/n\]/);
+				return answers.shift();
+			},
+			askSecret: async () => SECRET,
+			pull: async () => { pulled += 1; return { ok: true }; },
+			applyDisplay() {},
+			write() {},
+		});
+		assert.equal(pulled, 0);
+		assert.equal(result.display, 'auto');
+		assert.equal(result.provider, 'ollama');
+		assert.equal(result.disk.model.apiKey, '');
+		const text = result.lines.join('\n');
+		assert.match(text, /^4\) Tips$/m);
+		assert.match(text, /38;2;125;125;125mtype a request/);
+	} finally {
+		if (prevNo === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = prevNo;
+		if (prevColor === undefined) delete process.env.COLORTERM;
+		else process.env.COLORTERM = prevColor;
+		setAppearance('auto');
+	}
 });
 
 test('OpenRouter key is hidden, stored via the keyring, and kept out of settings and logs', async () => {
