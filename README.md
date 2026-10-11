@@ -32,6 +32,8 @@ Installs into `~/.copix` and places a `copix` launcher on your **default PATH** 
 
 ## Usage
 
+![Copix CLI prompt while a local model is thinking](assets/cli.png)
+
 ```bash
 copix                         # interactive REPL
 copix "explain package.json"  # one-shot
