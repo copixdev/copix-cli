@@ -5,13 +5,24 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { keyStatusLabel, loadOpenRouterKey, saveOpenRouterKey } from './keychain.js';
 import { installNodeCopixApi } from './nodeApi.js';
 import * as ui from './ui.js';
 import { copyText } from './clipboard.js';
 import { applyUndo, snapshotFileEdit } from './edits.js';
 import { parseSubmission, readPrompt, suggestCommands } from './input.js';
 import { initialModelIndex, modelChoices, resolveModelChoice, selectOption } from './select.js';
+import {
+	collectChecks,
+	commandOnPath,
+	doctorKeyLine,
+	needsSetup,
+	readHidden,
+	runSetup,
+	shouldPrompt,
+} from './setup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_SRC = path.resolve(__dirname, '../agent');
@@ -33,6 +44,8 @@ function parseArgs(argv) {
 		help: false,
 		version: false,
 		doctor: false,
+		setup: false,
+		yes: false,
 	};
 	const rest = [];
 	for (let i = 0; i < argv.length; i++) {
@@ -40,6 +53,8 @@ function parseArgs(argv) {
 		if (a === '-h' || a === '--help') opts.help = true;
 		else if (a === '-v' || a === '--version') opts.version = true;
 		else if (a === '--doctor' || a === 'doctor') opts.doctor = true;
+		else if (a === 'setup') opts.setup = true;
+		else if (a === '--yes' || a === '-y') opts.yes = true;
 		else if (a === '-p' || a === '--workspace') opts.workspace = path.resolve(argv[++i] || process.cwd());
 		else rest.push(a);
 	}
@@ -116,8 +131,9 @@ function modelLabel(settings) {
 
 function normalizeSettings(settings) {
 	const raw = settings?.model && typeof settings.model === 'object' ? settings.model : {};
+	const provider = raw.provider === 'openrouter' ? 'openrouter' : 'ollama';
 	let modelId = String(raw.modelId || FALLBACK_MODEL).replace(/^ollama\//, '') || FALLBACK_MODEL;
-	if (/llama-3|gpt-|claude|gemini|mixtral|groq/i.test(modelId) || modelId.includes('/')) {
+	if (provider !== 'openrouter' && (/llama-3|gpt-|claude|gemini|mixtral|groq/i.test(modelId) || modelId.includes('/'))) {
 		modelId = FALLBACK_MODEL;
 	}
 	const model = {
@@ -125,7 +141,7 @@ function normalizeSettings(settings) {
 		selection: raw.selection === 'manual' ? 'manual' : 'auto',
 		lowVram: Boolean(raw.lowVram),
 		...raw,
-		provider: 'ollama',
+		provider,
 		modelId,
 	};
 	return {
@@ -374,7 +390,7 @@ function warn(msg) {
 async function repl(deps) {
 	const { api, runAgent, resolveModelConfig } = deps;
 	let workspaceRoot = deps.workspaceRoot;
-	let rawSettings = await api.getSettings();
+	let rawSettings = deps.rawSettings || await api.getSettings();
 	let settings = normalizeSettings(rawSettings);
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 	let history = [];
@@ -460,7 +476,7 @@ async function repl(deps) {
 		console.log('');
 	}
 
-	await printBannerNow();
+	if (!deps.skipBanner) await printBannerNow();
 
 	while (true) {
 		const line = await readPrompt({
@@ -681,12 +697,49 @@ async function repl(deps) {
 	}
 }
 
+function askLine(prompt) {
+	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+	return new Promise((resolve) => {
+		rl.question(prompt, (answer) => {
+			rl.close();
+			resolve(answer);
+		});
+	});
+}
+
+async function hydrateKey(settings, api) {
+	const fileKey = String(settings?.model?.apiKey || '');
+	let sessionKey = '';
+	if (fileKey) {
+		const saved = await saveOpenRouterKey(fileKey);
+		const stripped = { ...settings, model: { ...settings.model, apiKey: '' } };
+		await api.setSettings(stripped);
+		settings = stripped;
+		if (saved.ok) sessionKey = fileKey;
+		else if (saved.message) console.log(saved.message);
+	}
+	const loaded = await loadOpenRouterKey();
+	if (loaded.message && settings?.model?.provider === 'openrouter' && !fileKey) {
+		console.log(loaded.message);
+	}
+	const key = loaded.key || sessionKey;
+	return {
+		...settings,
+		model: { ...(settings.model || {}), apiKey: key },
+	};
+}
+
 async function runDoctor(api, version, workspaceRoot) {
 	const nodeOk = Number(process.versions.node.split('.')[0]) >= 18;
 	const agentOk = fs.existsSync(path.join(AGENT_SRC, 'models/router.ts'));
 	const { settings: settingsPath, sessions: sessionsPath } = copixPaths();
-	const status = await api.getServerStatus().catch(() => ({ online: false, models: [] }));
-	const models = Array.isArray(status?.models) ? status.models : [];
+	const checks = await collectChecks({
+		workspaceExists: fs.existsSync(path.join(os.homedir(), 'Copix')),
+		cliOnPath: commandOnPath('copix'),
+	});
+	const ollamaOnline = checks.some((check) => check.id === 'ollama' && check.ok);
+	const modelOk = checks.some((check) => check.id === 'model' && check.ok);
+	const loaded = await loadOpenRouterKey();
 	const yes = ui.toneMark(true);
 	const no = ui.toneMark(false);
 	const pending = ui.toneMark(null);
@@ -694,8 +747,6 @@ async function runDoctor(api, version, workspaceRoot) {
 		`copix ${version} · ${process.platform}/${process.arch}`,
 		`${nodeOk ? yes : no} Node.js ${process.version} (need 18+)`,
 		`${agentOk ? yes : no} Standalone agent runtime`,
-		`${status?.online ? yes : no} Ollama ${status?.online ? 'online' : 'offline — install from https://ollama.com'}`,
-		`${models.length ? yes : no} Models ${models.length ? models.slice(0, 6).join(', ') : `(none — ollama pull ${FALLBACK_MODEL})`}`,
 		`${fs.existsSync(settingsPath) ? yes : pending} Settings ${settingsPath}`,
 		`${fs.existsSync(sessionsPath) ? yes : pending} Sessions ${sessionsPath}`,
 		`${yes} Workspace ${workspaceRoot}`,
@@ -703,11 +754,12 @@ async function runDoctor(api, version, workspaceRoot) {
 		'No account required — Desktop and CLI are local-only.',
 		'Reinstall: the command below',
 	];
-	console.log(`\n${ui.boxDoctor(rows)}\n${ui.cliInstallCommand()}\n`);
-	if (!nodeOk || !agentOk || !status?.online || !models.length) {
+	console.log(`\n${ui.formatChecks(checks)}\n${doctorKeyLine(keyStatusLabel(loaded.key), loaded.keyring ? '' : loaded.message)}\n`);
+	console.log(`${ui.boxDoctor(rows)}\n${ui.cliInstallCommand()}\n`);
+	if (!nodeOk || !agentOk || !ollamaOnline || !modelOk) {
 		process.exitCode = 1;
 	}
-	return { online: Boolean(status?.online) };
+	return { online: ollamaOnline };
 }
 
 export async function main(argv) {
@@ -726,6 +778,7 @@ export async function main(argv) {
 		throw new Error(`Standalone agent missing at ${AGENT_SRC}. Re-run: ${ui.cliInstallCommand()}`);
 	}
 
+	const workspaceExisted = fs.existsSync(path.join(os.homedir(), 'Copix'));
 	const deps = await loadAgentModules();
 	const workspaceRoot = fs.existsSync(opts.workspace) ? path.resolve(opts.workspace) : process.cwd();
 
@@ -734,23 +787,63 @@ export async function main(argv) {
 		return;
 	}
 
-	const settings = normalizeSettings(await deps.api.getSettings());
-	const status = await deps.api.getServerStatus();
-	const installedModels = Array.isArray(status?.models) ? status.models.map(String) : [];
+	let rawSettings = await hydrateKey(await deps.api.getSettings(), deps.api);
+	if (rawSettings.display) ui.setAppearance(rawSettings.display);
+	let settings = normalizeSettings(rawSettings);
+	const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	const interactive = shouldPrompt({
+		tty,
+		yes: opts.yes,
+		plain: ui.isPlain(),
+		ci: Boolean(process.env.CI),
+	});
+	const runWizard = needsSetup(rawSettings, { force: opts.setup });
 
-	if (!status?.online) {
-		warn('Ollama is offline. Install it from https://ollama.com, run ollama pull qwen2.5:3b, then /doctor.');
-	} else if (!installedModels.length) {
-		warn(`No Ollama models yet. Run /pull ${FALLBACK_MODEL}.`);
-	}
-
-	if (opts.prompt) {
+	if (runWizard) {
+		const preview = await deps.api.getServerStatus().catch(() => ({ online: false, models: [] }));
 		ui.printBanner({
 			version: pkg.version,
 			model: modelLabel(settings),
 			workspace: workspaceRoot,
-			ollamaOk: Boolean(status?.online),
+			ollamaOk: Boolean(preview?.online),
 		});
+		const result = await runSetup({
+			settings: rawSettings,
+			tty,
+			yes: opts.yes,
+			plain: ui.isPlain(),
+			ci: Boolean(process.env.CI),
+			workspaceExists: workspaceExisted,
+			cliOnPath: commandOnPath('copix'),
+			ask: askLine,
+			askSecret: (prompt) => readHidden(prompt),
+			applyDisplay: (mode) => ui.setAppearance(mode),
+		});
+		rawSettings = result.session;
+		settings = normalizeSettings(rawSettings);
+		await deps.api.setSettings(result.disk);
+	}
+
+	const status = await deps.api.getServerStatus().catch(() => ({ online: false, models: [] }));
+	const installedModels = Array.isArray(status?.models) ? status.models.map(String) : [];
+
+	if (!runWizard) {
+		if (!status?.online) {
+			warn('Ollama is offline. Install it from https://ollama.com, run ollama pull qwen2.5:3b, then /doctor.');
+		} else if (!installedModels.length) {
+			warn(`No Ollama models yet. Run /pull ${FALLBACK_MODEL}.`);
+		}
+	}
+
+	if (opts.prompt) {
+		if (!runWizard) {
+			ui.printBanner({
+				version: pkg.version,
+				model: modelLabel(settings),
+				workspace: workspaceRoot,
+				ollamaOk: Boolean(status?.online),
+			});
+		}
 		ui.beginUser(opts.prompt);
 		const session = newCliSession(workspaceRoot);
 		try {
@@ -782,5 +875,7 @@ export async function main(argv) {
 		return;
 	}
 
-	await repl({ ...deps, workspaceRoot });
+	if (runWizard && !interactive) return;
+
+	await repl({ ...deps, workspaceRoot, rawSettings, skipBanner: runWizard });
 }

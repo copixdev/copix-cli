@@ -20,6 +20,7 @@ import {
 import { webFetch, webSearch } from './webBrowse.js';
 import { computeLineDiff, truncateText } from '../utils/lineDiff.js';
 import { assertSafeFilePath } from '../utils/secrets.js';
+import { unloadOtherModels } from '../../src/ollamaProfile.js';
 import { emitAgentTerminal } from '../utils/terminalBridge.js';
 import { isMac, isWindows, projectPathExample, shellLabel } from '../utils/platform.js';
 
@@ -840,8 +841,12 @@ async function streamCompletion(
 			GROQ_FALLBACK_MODEL,
 		])]
 		: config.provider === 'ollama'
-			? [...new Set([config.model, FALLBACK_MODEL_ID])]
+			? (config.singleModel ? [config.model] : [...new Set([config.model, FALLBACK_MODEL_ID])])
 			: [config.model];
+
+	if (config.provider === 'ollama' && config.singleModel) {
+		await unloadOtherModels(config.model);
+	}
 
 	let maxTokens = config.provider === 'groq'
 		? Math.min(config.numPredict ?? GROQ_MAX_TOKENS, GROQ_MAX_TOKENS)
@@ -877,11 +882,11 @@ async function streamCompletion(
 				...(tools ? { tools } : {}),
 				stream: true,
 				temperature: 0.05,
+				keep_alive: config.keepAlive || '30m',
 				options: {
 					...(config.numCtx != null ? { num_ctx: config.numCtx } : { num_ctx: 16384 }),
 					num_predict: config.numPredict ?? 16384,
 					num_batch: 512,
-					keep_alive: '30m',
 				},
 			};
 

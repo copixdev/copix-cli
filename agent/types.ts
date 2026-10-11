@@ -61,12 +61,18 @@ export interface ModelSettings {
 }
 
 /** Local app settings — persisted to ~/Copix/settings.json */
+export type DisplayPreference = 'auto' | 'light' | 'dark' | 'plain';
+
 export interface AppSettings {
 	model: ModelSettings;
 	layout: LayoutSettings;
 	workspace: WorkspaceSettings;
 	theme: ThemePreference;
 	agentMode: AgentMode;
+	/** First launch runs setup. False after that; `copix setup` runs it again. */
+	firstRun?: boolean;
+	/** Color choice from setup. The OpenRouter key is not stored here. */
+	display?: DisplayPreference;
 }
 
 export const DEFAULT_LAYOUT: LayoutSettings = {

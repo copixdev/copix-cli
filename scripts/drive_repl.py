@@ -47,14 +47,31 @@ def main():
         os.write(fd, data)
         pull(0.2)
 
-    if not pull(12) and b"Ask, plan, build anything" not in buf:
+    def wait_from(token, start, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline and child_status is None:
+            found = buf.find(token, start)
+            if found >= 0:
+                return found
+            if not pull(0.1):
+                break
+        return buf.find(token, start)
+
+    # First launch asks the setup questions. Enter takes the default.
+    # Decline a model pull so the test does not download anything.
+    choice = wait_from(b"Choice [1]:", 0, 15)
+    if choice >= 0:
+        send(b"\r")
+        choice = wait_from(b"Choice [1]:", choice + len(b"Choice [1]:"), 8)
+        if choice >= 0:
+            send(b"\r")
+        saw_pull = wait_from(b"Pull it now?", choice + 1 if choice >= 0 else 0, 6)
+        if saw_pull >= 0 and buf.find(b"Ask, plan, build anything", saw_pull) < 0:
+            send(b"n\r")
+
+    if wait_from(b"Ask, plan, build anything", 0, 12) < 0:
         sys.stdout.buffer.write(buf)
         return 1
-    # Wait until the prompt is actually on screen.
-    deadline = time.time() + 12
-    while b"Ask, plan, build anything" not in buf and time.time() < deadline:
-        if not pull(0.2):
-            break
 
     send(b"/")
     pull(0.4)

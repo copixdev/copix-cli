@@ -38,8 +38,13 @@ Installs into `~/.copix` and places a `copix` launcher on your **default PATH** 
 copix                         # interactive REPL
 copix "explain package.json"  # one-shot
 copix -p ~/sites "add a landing page"
-copix doctor                  # Node · Ollama · models · paths
+copix doctor                  # rerun the setup checks
+copix setup                   # run first-run setup again
 ```
+
+The first launch asks four things, and Enter accepts the default: colors (auto, light terminal, dark terminal, or plain), provider (Ollama, or OpenRouter), the setup checks, then three tips. The checks are Ollama, a model, the `~/Copix` folder, and `copix` on your PATH. A missing model shows the download size and asks `Pull it now? [Y/n]`. On an 8 GB machine the suggestion is `qwen2.5:3b` (about 2 GB). Larger tags are marked `needs 16 GB`. With no terminal, or in plain mode, Copix prints the checks and the fix commands and does not ask. `--yes` accepts the defaults and is the explicit yes to pull.
+
+An OpenRouter key is stored in the macOS Keychain, Windows Credential Manager, or Linux Secret Service. It is not written to `settings.json`, and `copix doctor` only says whether the key is set. If the system has no keyring, set `OPENROUTER_API_KEY` in the environment.
 
 In the prompt, ↑ and ↓ recall earlier lines. Tab completes a slash command. Ctrl+J, or a trailing `\` then Enter, continues on the next line. Ctrl+C clears the line; Ctrl+C on an empty line quits. A mistyped slash command suggests the nearest match. While a local model is working, a clay highlight sweeps across the word `thinking` about once a second, and the line shows elapsed seconds. `/status` and `/doctor` print the settings and sessions paths for this machine. `/help` groups commands and shows the install command and the settings path in that OS's usual form (`~/Copix` on macOS and Linux, `%USERPROFILE%\Copix` on Windows).
 
@@ -52,7 +57,7 @@ In the prompt, ↑ and ↓ recall earlier lines. Tab completes a slash command. 
 | `/pull <tag>` | Download a model (`ollama pull`) |
 | `/cwd [path]` | Show or change the workspace (saved as the default) |
 | `/status` | Ollama status, model, workspace, session info |
-| `/doctor` | Environment check |
+| `/doctor` | Rerun the setup checks |
 | `/context` | Turns, characters, and a rough token estimate for this chat |
 | `/copy` | Copy the last reply (or save it to `~/Copix/last-reply.txt` when the clipboard tool is missing) |
 | `/undo` | Restore the last file edit from this session |

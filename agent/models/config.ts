@@ -17,6 +17,8 @@ import {
 import type { ModelProvider } from '../types.js';
 import { selectModelForTask } from './modelSelector.js';
 import type { ModelSettings } from '../types.js';
+import os from 'node:os';
+import { eightGbDefaults } from '../../src/ollamaProfile.js';
 
 export const DEFAULT_NUM_CTX = 16384;
 export const LOW_VRAM_NUM_CTX = 8192;
@@ -40,6 +42,10 @@ export interface ModelConfig {
 	numCtx?: number;
 	numPredict?: number;
 	numGpu?: number;
+	/** Ollama keep_alive. 8 GB machines use a short window so the model does not sit in RAM. */
+	keepAlive?: string;
+	/** When set, do not fall back to a second Ollama model in the same turn. */
+	singleModel?: boolean;
 }
 
 export function settingsToConfig(model: ModelSettings, modelId?: string): ModelConfig {
@@ -79,13 +85,16 @@ export function settingsToConfig(model: ModelSettings, modelId?: string): ModelC
 	}
 
 	const lowVram = Boolean(model.lowVram);
+	const fitted = eightGbDefaults(os.totalmem());
 	return {
 		model: resolved,
 		baseUrl: OLLAMA_BASE_URL,
 		provider: 'ollama',
-		numCtx: lowVram ? LOW_VRAM_NUM_CTX : DEFAULT_NUM_CTX,
+		numCtx: fitted ? fitted.numCtx : (lowVram ? LOW_VRAM_NUM_CTX : DEFAULT_NUM_CTX),
 		numPredict: lowVram ? LOW_VRAM_NUM_PREDICT : DEFAULT_NUM_PREDICT,
 		numGpu: undefined,
+		keepAlive: fitted ? fitted.keepAlive : '30m',
+		singleModel: Boolean(fitted),
 	};
 }
 
@@ -143,7 +152,10 @@ export async function checkModelHealth(config: ModelConfig): Promise<{ ok: boole
 	if (config.provider !== 'ollama') {
 		const label = config.provider === 'groq' ? 'Groq' : config.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
 		if (!config.apiKey) {
-			return { ok: false, message: `Add model.apiKey in ~/Copix/settings.json (${CLOUD_KEY_HINTS[config.provider]})` };
+			const hint = config.provider === 'openrouter'
+				? 'OpenRouter key: not set. Store it with copix setup, or set OPENROUTER_API_KEY.'
+				: `Add an API key (${CLOUD_KEY_HINTS[config.provider]})`;
+			return { ok: false, message: hint };
 		}
 		try {
 			const res = await fetch(`${config.baseUrl}/models`, {
@@ -151,9 +163,9 @@ export async function checkModelHealth(config: ModelConfig): Promise<{ ok: boole
 				signal: AbortSignal.timeout(5000),
 			});
 			if (res.ok) return { ok: true, message: `${label} · ${config.model} ready` };
-			return { ok: false, message: `${label} ${res.status} — check apiKey in settings.json` };
+			return { ok: false, message: `${label} ${res.status} — the API key was rejected` };
 		} catch {
-			return { ok: false, message: `Cannot reach ${label} — check network and apiKey` };
+			return { ok: false, message: `Cannot reach ${label} — check the network` };
 		}
 	}
 

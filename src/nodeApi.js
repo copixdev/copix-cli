@@ -379,14 +379,17 @@ export function createNodeCopixApi() {
 			}
 			try {
 				const raw = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
+				const requested = raw.model?.provider;
+				const provider = requested === 'openrouter' ? 'openrouter' : 'ollama';
 				const mergedModel = {
 					...DEFAULT_SETTINGS.model,
 					...(raw.model || {}),
-					provider: 'ollama',
+					provider,
+					apiKey: '',
 				};
-				// Drop leftover cloud model ids (e.g. Groq) so CLI/Desktop stay on Ollama.
+				// Drop leftover cloud model ids when staying on Ollama. OpenRouter ids are kept.
 				const id = String(mergedModel.modelId || '');
-				if (!id || /llama-3|gpt-|claude|gemini|mixtral|groq/i.test(id) || id.includes('/')) {
+				if (provider !== 'openrouter' && (!id || /llama-3|gpt-|claude|gemini|mixtral|groq/i.test(id) || id.includes('/'))) {
 					mergedModel.modelId = DEFAULT_SETTINGS.model.modelId;
 				}
 				return {
@@ -400,7 +403,9 @@ export function createNodeCopixApi() {
 		},
 		setSettings: async (settings) => {
 			await fs.mkdir(COPIX_DIR, { recursive: true });
-			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+			const stored = JSON.parse(JSON.stringify(settings ?? {}));
+			if (stored.model && typeof stored.model === 'object') stored.model.apiKey = '';
+			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
 		},
 		loadChatSessions: async () => {
 			try {
@@ -426,7 +431,7 @@ export function createNodeCopixApi() {
 		openIdeWindow: async () => ({ ok: false, message: 'IDE window is desktop-only' }),
 		getServerStatus: async () => {
 			try {
-				const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+				const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
 				if (!res.ok) return { online: false, hasModel: false, models: [], provider: 'ollama' };
 				const data = await res.json();
 				const models = (data.models || []).map(m => m.name);
