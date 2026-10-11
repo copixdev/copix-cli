@@ -3,11 +3,11 @@
 # Permanent install into a real bin dir already on PATH.
 # Never edits shell profiles (.zshrc / .bashrc / etc.).
 #
-# curl -fsSL https://raw.githubusercontent.com/copixdev/copix/refs/heads/main/cli/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/copixdev/copix-cli/refs/heads/main/install.sh | bash
 set -euo pipefail
 
 INSTALLER_VERSION="1.7.0"
-REPO="${COPIX_REPO:-https://github.com/copixdev/copix.git}"
+REPO="${COPIX_REPO:-https://github.com/copixdev/copix-cli.git}"
 BRANCH="${COPIX_BRANCH:-main}"
 INSTALL_DIR="${COPIX_INSTALL_DIR:-$HOME/.copix}"
 
@@ -40,6 +40,7 @@ fi
 install_or_update() {
   if [ -d "$INSTALL_DIR/.git" ]; then
     echo "Updating Copix in $INSTALL_DIR …"
+    git -C "$INSTALL_DIR" remote set-url origin "$REPO"
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$BRANCH"
     git -C "$INSTALL_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
     git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"
@@ -57,20 +58,20 @@ if ! install_or_update; then
   git clone --depth 1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"
 fi
 
-if [ ! -f "$INSTALL_DIR/cli/bin/copix.js" ]; then
-  echo "Install failed: $INSTALL_DIR/cli/bin/copix.js missing."
+if [ ! -f "$INSTALL_DIR/bin/copix.js" ]; then
+  echo "Install failed: $INSTALL_DIR/bin/copix.js missing."
   exit 1
 fi
 
-if [ ! -f "$INSTALL_DIR/cli/agent/models/router.ts" ]; then
-  echo "Install failed: standalone agent missing under cli/agent."
+if [ ! -f "$INSTALL_DIR/agent/models/router.ts" ]; then
+  echo "Install failed: standalone agent missing under agent/."
   exit 1
 fi
 
-chmod +x "$INSTALL_DIR/cli/bin/copix.js"
+chmod +x "$INSTALL_DIR/bin/copix.js"
 
 echo "Installing CLI dependencies …"
-npm install --prefix "$INSTALL_DIR/cli" --omit=dev --silent
+npm install --prefix "$INSTALL_DIR" --omit=dev --silent
 
 # Remove leftover ~/.local/bin shim from older installers (optional cleanup)
 if [ -L "$HOME/.local/bin/copix" ] || [ -f "$HOME/.local/bin/copix" ]; then
@@ -114,7 +115,7 @@ write_wrapper() {
   local body
   body="$(cat <<EOF
 #!/usr/bin/env bash
-exec node "$INSTALL_DIR/cli/bin/copix.js" "\$@"
+exec node "$INSTALL_DIR/bin/copix.js" "\$@"
 EOF
 )"
   if [ "$mode" = "sudo" ]; then
@@ -169,7 +170,7 @@ if [ -z "$COPIX_BIN" ]; then
     fi
   fi
   if [ -n "$NPM_BIN_DIR" ] && path_has_dir "$NPM_BIN_DIR" && [ -w "$NPM_BIN_DIR" ]; then
-    if npm install -g "$INSTALL_DIR/cli" --silent 2>/tmp/copix-npm-g.err; then
+    if npm install -g "$INSTALL_DIR" --silent 2>/tmp/copix-npm-g.err; then
       if [ -x "$NPM_BIN_DIR/copix" ]; then
         COPIX_BIN="$NPM_BIN_DIR/copix"
         METHOD="npm-global ($NPM_BIN_DIR)"

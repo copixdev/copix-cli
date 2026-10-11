@@ -1,8 +1,8 @@
 # Copix CLI installer (Windows) — permanent user install, PATH updated automatically.
-# irm https://raw.githubusercontent.com/copixdev/copix/refs/heads/main/cli/install.ps1 | iex
+# irm https://raw.githubusercontent.com/copixdev/copix-cli/refs/heads/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 
-$Repo = if ($env:COPIX_REPO) { $env:COPIX_REPO } else { 'https://github.com/copixdev/copix.git' }
+$Repo = if ($env:COPIX_REPO) { $env:COPIX_REPO } else { 'https://github.com/copixdev/copix-cli.git' }
 $Branch = if ($env:COPIX_BRANCH) { $env:COPIX_BRANCH } else { 'main' }
 $InstallDir = if ($env:COPIX_INSTALL_DIR) { $env:COPIX_INSTALL_DIR } else { Join-Path $HOME '.copix' }
 
@@ -27,6 +27,7 @@ if ($nodeMajor -lt 18) {
 function Install-OrUpdate {
 	if (Test-Path (Join-Path $InstallDir '.git')) {
 		Write-Host "Updating Copix in $InstallDir …"
+		git -C $InstallDir remote set-url origin $Repo
 		git -C $InstallDir fetch --depth 1 origin $Branch
 		git -C $InstallDir checkout -B $Branch "origin/$Branch"
 		git -C $InstallDir reset --hard "origin/$Branch"
@@ -46,20 +47,20 @@ try {
 	git clone --depth 1 --branch $Branch $Repo $InstallDir
 }
 
-$CopixJs = Join-Path $InstallDir 'cli\bin\copix.js'
-$AgentRouter = Join-Path $InstallDir 'cli\agent\models\router.ts'
+$CopixJs = Join-Path $InstallDir 'bin\copix.js'
+$AgentRouter = Join-Path $InstallDir 'agent\models\router.ts'
 if (-not (Test-Path $CopixJs)) { Write-Error "Install failed: $CopixJs missing." }
-if (-not (Test-Path $AgentRouter)) { Write-Error 'Install failed: standalone agent missing under cli/agent.' }
+if (-not (Test-Path $AgentRouter)) { Write-Error 'Install failed: standalone agent missing under agent/.' }
 
 Write-Host 'Installing CLI dependencies …'
-npm install --prefix (Join-Path $InstallDir 'cli') --omit=dev --silent
+npm install --prefix $InstallDir --omit=dev --silent
 
 $Installed = $null
 $Method = ''
 
 # 1) Prefer npm global (usually already on user PATH)
 try {
-	npm install -g $InstallDir\cli --silent 2>$null
+	npm install -g $InstallDir --silent 2>$null
 	$npmPrefix = (npm prefix -g).Trim()
 	$npmShim = Join-Path $npmPrefix 'copix.cmd'
 	$npmShimPs = Join-Path $npmPrefix 'copix'
@@ -127,4 +128,4 @@ Write-Host '  copix doctor'
 Write-Host '  copix'
 Write-Host ''
 Write-Host 'macOS / Linux install:'
-Write-Host '  curl -fsSL https://raw.githubusercontent.com/copixdev/copix/refs/heads/main/cli/install.sh | bash'
+Write-Host '  curl -fsSL https://raw.githubusercontent.com/copixdev/copix-cli/refs/heads/main/install.sh | bash'

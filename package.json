@@ -16,7 +16,7 @@
     "doctor": "node ./bin/copix.js doctor",
     "smoke": "node ./scripts/smoke-tools.mjs",
     "test": "node --test --test-concurrency=1 ./scripts/test-cli.mjs",
-    "postinstall": "node -e \"console.log('Copix CLI ready — standalone agent under cli/agent')\""
+    "postinstall": "node -e \"console.log('Copix CLI ready — standalone agent under agent/')\""
   },
   "dependencies": {
     "tsx": "^4.20.3"
