@@ -1,4 +1,6 @@
 export const OLLAMA_BASE_URL = 'http://127.0.0.1:11434/v1';
+/** Native Ollama chat. `/v1/chat/completions` ignores `options.num_ctx` and `keep_alive`. */
+export const OLLAMA_NATIVE_CHAT_URL = 'http://127.0.0.1:11434/api/chat';
 export {
 	FALLBACK_MODEL_ID as DEFAULT_MODEL_ID,
 	COPIX_MODEL_IDS,
@@ -114,6 +116,7 @@ export function resolveModelConfig(
 }
 
 export function resolveChatUrl(config: ModelConfig): string {
+	if (config.provider === 'ollama') return OLLAMA_NATIVE_CHAT_URL;
 	return `${config.baseUrl}/chat/completions`;
 }
 

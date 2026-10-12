@@ -5,9 +5,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { keyStatusLabel, loadOpenRouterKey, saveOpenRouterKey } from './keychain.js';
+import { keyStatusLabel, loadOpenRouterKey } from './keychain.js';
 import { installNodeCopixApi } from './nodeApi.js';
 import * as ui from './ui.js';
 import { copyText } from './clipboard.js';
@@ -20,6 +19,7 @@ import {
 	doctorKeyLine,
 	needsSetup,
 	readHidden,
+	readLine,
 	runSetup,
 	shouldPrompt,
 } from './setup.js';
@@ -125,8 +125,13 @@ function makeCallbacks(state, extras = {}) {
 
 function modelLabel(settings) {
 	const id = settings?.model?.modelId || FALLBACK_MODEL;
-	const provider = settings?.model?.provider || 'ollama';
+	const provider = settings?.model?.provider === 'openrouter' ? 'openrouter' : 'ollama';
 	return `${provider}/${id}`;
+}
+
+function labeledModel(settings, modelId) {
+	const id = modelLabel({ model: { ...(settings?.model || {}), modelId: modelId || settings?.model?.modelId } });
+	return settings?.model?.selection === 'manual' ? id : `auto · ${id}`;
 }
 
 function normalizeSettings(settings) {
@@ -381,10 +386,17 @@ function info(msg) {
 
 function warn(msg) {
 	if (ui.isPlain()) {
-		console.log(`\nWarning: ${ui.scrubPlain(msg)}\n`);
+		const text = ui.wrapColumns(`Warning: ${msg}`, 80).join('\n');
+		console.log(`\n${ui.scrubPlain(text)}\n`);
 		return;
 	}
-	console.log(`\n${ui.color.clay}✗${ui.color.reset} ${msg}\n`);
+	const wrapped = ui.wrapColumns(msg, 78);
+	const painted = wrapped.map((line, index) => (
+		index === 0
+			? `${ui.color.clay}✗${ui.color.reset} ${line}`
+			: `  ${line}`
+	)).join('\n');
+	console.log(`\n${painted}\n`);
 }
 
 async function repl(deps) {
@@ -395,7 +407,7 @@ async function repl(deps) {
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 	let history = [];
 	let lastModel = settings.model.modelId;
-	let ollamaOk = false;
+	let ollamaOk = deps.ollamaOk != null ? Boolean(deps.ollamaOk) : false;
 	let session = newCliSession(workspaceRoot);
 	const promptHistory = [];
 	const undoStack = [];
@@ -407,8 +419,7 @@ async function repl(deps) {
 	}
 
 	function activeModelLabel() {
-		const id = `ollama/${lastModel}`;
-		return settings.model.selection === 'auto' ? `auto · ${id}` : id;
+		return labeledModel(settings, lastModel);
 	}
 
 	async function printBannerNow() {
@@ -698,33 +709,25 @@ async function repl(deps) {
 }
 
 function askLine(prompt) {
-	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-	return new Promise((resolve) => {
-		rl.question(prompt, (answer) => {
-			rl.close();
-			resolve(answer);
-		});
-	});
+	return readLine(prompt);
 }
 
 async function hydrateKey(settings, api) {
 	const fileKey = String(settings?.model?.apiKey || '');
-	let sessionKey = '';
+	const notice = String(settings?.keyNotice || '');
+	if (notice) console.log(notice);
 	if (fileKey) {
-		const saved = await saveOpenRouterKey(fileKey);
-		const stripped = { ...settings, model: { ...settings.model, apiKey: '' } };
-		await api.setSettings(stripped);
-		settings = stripped;
-		if (saved.ok) sessionKey = fileKey;
-		else if (saved.message) console.log(saved.message);
+		const { keyNotice, ...rest } = settings;
+		await api.setSettings({ ...rest, model: { ...settings.model, apiKey: '' } });
 	}
 	const loaded = await loadOpenRouterKey();
 	if (loaded.message && settings?.model?.provider === 'openrouter' && !fileKey) {
 		console.log(loaded.message);
 	}
-	const key = loaded.key || sessionKey;
+	const key = loaded.key || fileKey;
+	const { keyNotice, ...clean } = settings || {};
 	return {
-		...settings,
+		...clean,
 		model: { ...(settings.model || {}), apiKey: key },
 	};
 }
@@ -755,7 +758,7 @@ async function runDoctor(api, version, workspaceRoot) {
 		'Reinstall: the command below',
 	];
 	console.log(`\n${ui.formatChecks(checks)}\n${doctorKeyLine(keyStatusLabel(loaded.key), loaded.keyring ? '' : loaded.message)}\n`);
-	console.log(`${ui.boxDoctor(rows)}\n${ui.cliInstallCommand()}\n`);
+	console.log(`${ui.boxDoctor(rows)}\n${ui.wrapColumns(ui.cliInstallCommand(), 80).join('\n')}\n`);
 	if (!nodeOk || !agentOk || !ollamaOnline || !modelOk) {
 		process.exitCode = 1;
 	}
@@ -778,7 +781,6 @@ export async function main(argv) {
 		throw new Error(`Standalone agent missing at ${AGENT_SRC}. Re-run: ${ui.cliInstallCommand()}`);
 	}
 
-	const workspaceExisted = fs.existsSync(path.join(os.homedir(), 'Copix'));
 	const deps = await loadAgentModules();
 	const workspaceRoot = fs.existsSync(opts.workspace) ? path.resolve(opts.workspace) : process.cwd();
 
@@ -788,6 +790,7 @@ export async function main(argv) {
 	}
 
 	let rawSettings = await hydrateKey(await deps.api.getSettings(), deps.api);
+	const workspaceExists = fs.existsSync(path.join(os.homedir(), 'Copix'));
 	if (rawSettings.display) ui.setAppearance(rawSettings.display);
 	let settings = normalizeSettings(rawSettings);
 	const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -798,6 +801,7 @@ export async function main(argv) {
 		ci: Boolean(process.env.CI),
 	});
 	const runWizard = needsSetup(rawSettings, { force: opts.setup });
+	let setupOllamaOk;
 
 	if (runWizard) {
 		const preview = await deps.api.getServerStatus().catch(() => ({ online: false, models: [] }));
@@ -813,7 +817,7 @@ export async function main(argv) {
 			yes: opts.yes,
 			plain: ui.isPlain(),
 			ci: Boolean(process.env.CI),
-			workspaceExists: workspaceExisted,
+			workspaceExists,
 			cliOnPath: commandOnPath('copix'),
 			ask: askLine,
 			askSecret: (prompt) => readHidden(prompt),
@@ -821,6 +825,7 @@ export async function main(argv) {
 		});
 		rawSettings = result.session;
 		settings = normalizeSettings(rawSettings);
+		setupOllamaOk = result.checks.some((check) => check.id === 'ollama' && check.ok);
 		await deps.api.setSettings(result.disk);
 	}
 
@@ -861,9 +866,9 @@ export async function main(argv) {
 			session.workspaceRoot = turn.workspaceRoot;
 			await persistSession(deps.api, session);
 			ui.printFooter({
-				model: `ollama/${turn.model}`,
+				model: labeledModel(settings, turn.model),
 				workspace: turn.workspaceRoot,
-				ollamaOk: Boolean(status?.online),
+				ollamaOk: setupOllamaOk != null ? setupOllamaOk : Boolean(status?.online),
 			});
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
@@ -877,5 +882,11 @@ export async function main(argv) {
 
 	if (runWizard && !interactive) return;
 
-	await repl({ ...deps, workspaceRoot, rawSettings, skipBanner: runWizard });
+	await repl({
+		...deps,
+		workspaceRoot,
+		rawSettings,
+		skipBanner: runWizard,
+		ollamaOk: setupOllamaOk,
+	});
 }

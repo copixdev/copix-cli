@@ -3,6 +3,7 @@
  * Shared by the CLI so runAgent + tools match Copix Desktop.
  */
 import { spawn } from 'node:child_process';
+import { saveOpenRouterKey } from './keychain.js';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
@@ -10,6 +11,32 @@ import path from 'node:path';
 
 const COPIX_DIR = path.join(os.homedir(), 'Copix');
 const SETTINGS_PATH = path.join(COPIX_DIR, 'settings.json');
+
+/**
+ * Move a plaintext OpenRouter key out of settings.json and into the keychain.
+ * The file is rewritten with an empty apiKey. The key itself is returned so
+ * the current process can still use it when the keyring save fails.
+ */
+export async function migratePlaintextKey(settingsPath, saveKey = saveOpenRouterKey) {
+	let raw;
+	try {
+		raw = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+	} catch {
+		return { key: '', notice: '' };
+	}
+	const fileKey = String(raw?.model?.apiKey || '').trim();
+	if (!fileKey) return { key: '', notice: '' };
+	let notice = '';
+	try {
+		const saved = await saveKey(fileKey);
+		if (!saved?.ok && saved?.message) notice = saved.message;
+	} catch {
+		notice = '';
+	}
+	raw.model.apiKey = '';
+	await fs.writeFile(settingsPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+	return { key: fileKey, notice };
+}
 
 /** Users-directory prefix for a mistaken `/user/...` path. macOS and Windows differ; Linux does too. */
 export function usersDirectoryPrefix(platform = process.platform) {
@@ -378,6 +405,7 @@ export function createNodeCopixApi() {
 				return structuredClone(DEFAULT_SETTINGS);
 			}
 			try {
+				const migrated = await migratePlaintextKey(SETTINGS_PATH);
 				const raw = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
 				const requested = raw.model?.provider;
 				const provider = requested === 'openrouter' ? 'openrouter' : 'ollama';
@@ -385,18 +413,20 @@ export function createNodeCopixApi() {
 					...DEFAULT_SETTINGS.model,
 					...(raw.model || {}),
 					provider,
-					apiKey: '',
+					apiKey: migrated.key,
 				};
 				// Drop leftover cloud model ids when staying on Ollama. OpenRouter ids are kept.
 				const id = String(mergedModel.modelId || '');
 				if (provider !== 'openrouter' && (!id || /llama-3|gpt-|claude|gemini|mixtral|groq/i.test(id) || id.includes('/'))) {
 					mergedModel.modelId = DEFAULT_SETTINGS.model.modelId;
 				}
-				return {
+				const settings = {
 					...DEFAULT_SETTINGS,
 					...raw,
 					model: mergedModel,
 				};
+				if (migrated.notice) settings.keyNotice = migrated.notice;
+				return settings;
 			} catch {
 				return structuredClone(DEFAULT_SETTINGS);
 			}
@@ -404,6 +434,7 @@ export function createNodeCopixApi() {
 		setSettings: async (settings) => {
 			await fs.mkdir(COPIX_DIR, { recursive: true });
 			const stored = JSON.parse(JSON.stringify(settings ?? {}));
+			delete stored.keyNotice;
 			if (stored.model && typeof stored.model === 'object') stored.model.apiKey = '';
 			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
 		},

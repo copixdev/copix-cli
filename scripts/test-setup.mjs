@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { helpText, formatChecks, formatTips, setAppearance, setPlain, stripAnsi } from '../src/ui.js';
+import { helpText, cliInstallCommand, displayWidth, formatCheckLine, formatChecks, formatTips, setAppearance, setPlain, stripAnsi, wrapColumns } from '../src/ui.js';
 import { eightGbDefaults, recommendModel, recommendationLines, unloadOtherModels } from '../src/ollamaProfile.js';
 import {
 	KEYRING_MISSING,
 	saveOpenRouterKey,
 	settingsForDisk,
 } from '../src/keychain.js';
+import { migratePlaintextKey } from '../src/nodeApi.js';
 import {
 	collectChecks,
 	needsSetup,
@@ -82,7 +86,7 @@ test('Enter takes the numbered default, and a pull needs yes', () => {
 		ollamaOnline: true,
 		modelInstalled: false,
 		provider: 'ollama',
-	}), true);
+	}), false);
 	assert.equal(shouldPullModel({
 		interactive: false,
 		yes: true,
@@ -93,7 +97,21 @@ test('Enter takes the numbered default, and a pull needs yes', () => {
 	assert.equal(shouldPrompt({ tty: true }), true);
 	assert.equal(shouldPrompt({ tty: false }), false);
 	assert.equal(shouldPrompt({ tty: true, yes: true }), false);
-	assert.equal(shouldPrompt({ tty: true, plain: true }), false);
+	assert.equal(shouldPrompt({ tty: true, plain: true }), true);
+	assert.equal(shouldPullModel({
+		interactive: true,
+		answer: 'y',
+		ollamaOnline: true,
+		modelInstalled: false,
+		provider: 'ollama',
+	}), true);
+	assert.equal(shouldPullModel({
+		interactive: true,
+		answer: '',
+		ollamaOnline: true,
+		modelInstalled: false,
+		provider: 'ollama',
+	}), true);
 	assert.equal(shouldPrompt({ tty: true, ci: true }), false);
 	assert.equal(needsSetup({}), true);
 	assert.equal(needsSetup({ firstRun: false }), false);
@@ -174,7 +192,7 @@ test('non-TTY setup prints checks and does not pull or prompt', async () => {
 	assert.equal(asked, 0);
 	assert.equal(pulled, 0);
 	assert.equal(result.disk.firstRun, false);
-	assert.equal(result.disk.display, 'plain');
+	assert.equal(result.disk.display, 'auto');
 	assert.equal(result.disk.model.apiKey, '');
 	const text = result.lines.join('\n');
 	assert.match(text, /Ollama running: missing/);
@@ -210,7 +228,7 @@ test('offline --yes does not pull and still saves firstRun', async () => {
 	assert.ok(Date.now() - started < 4000);
 });
 
-test('--yes pulls only when Ollama is up and the model is missing', async () => {
+test('--yes never pulls, even when Ollama is up and the model is missing', async () => {
 	const tags = [];
 	const result = await runSetup({
 		settings: {},
@@ -225,8 +243,8 @@ test('--yes pulls only when Ollama is up and the model is missing', async () => 
 		applyDisplay() {},
 		write() {},
 	});
-	assert.deepEqual(tags, ['qwen2.5:3b']);
-	assert.equal(result.pulled, true);
+	assert.deepEqual(tags, []);
+	assert.equal(result.pulled, false);
 	assert.equal(result.disk.model.modelId, 'qwen2.5:3b');
 	assert.equal(result.disk.model.lowVram, true);
 	assert.equal(result.disk.model.apiKey, '');
@@ -446,4 +464,138 @@ test('keychain writes keep the secret out of the command arguments', async () =>
 			assert.equal(input, `${SECRET}\n${SECRET}\n`);
 		}
 	}
+});
+
+test('NO_COLOR on a TTY still asks and does not save plain mode', async () => {
+	const prevNo = process.env.NO_COLOR;
+	process.env.NO_COLOR = '1';
+	setPlain(true);
+	const prompts = [];
+	try {
+		const result = await runSetup({
+			settings: {},
+			tty: true,
+			yes: false,
+			plain: true,
+			totalMem: 8 * GB,
+			workspaceExists: true,
+			cliOnPath: true,
+			fetchImpl: async () => ({ ok: true, json: async () => ({ models: [{ name: 'qwen2.5:3b' }] }) }),
+			ask: async (prompt) => { prompts.push(prompt); return ''; },
+			askSecret: async () => '',
+			applyDisplay() {},
+			write() {},
+		});
+		assert.equal(prompts.length, 2);
+		assert.match(prompts[0], /Choice \[1\]:/);
+		assert.equal(result.disk.display, 'auto');
+		assert.equal(result.lines.join('\n').includes('\x1b'), false);
+	} finally {
+		if (prevNo === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = prevNo;
+		setPlain(false);
+	}
+});
+
+test('needs-more lines are dim and the recommended row has no needs note', async () => {
+	const prevNo = process.env.NO_COLOR;
+	const prevColor = process.env.COLORTERM;
+	delete process.env.NO_COLOR;
+	process.env.COLORTERM = 'truecolor';
+	setPlain(false);
+	try {
+		const result = await runSetup({
+			settings: {},
+			tty: false,
+			plain: false,
+			totalMem: 8 * GB,
+			workspaceExists: true,
+			cliOnPath: true,
+			fetchImpl: async () => ({ ok: false, json: async () => ({}) }),
+			applyDisplay() {},
+			write() {},
+		});
+		const text = result.lines.join('\n');
+		assert.match(text, /Recommended for 8 GB: qwen2\.5:3b \(about 2 GB\)/);
+		assert.doesNotMatch(text, /Recommended for 8 GB:.*needs/);
+		assert.match(text, /38;2;125;125;125mqwen2\.5:7b needs 16 GB/);
+	} finally {
+		if (prevNo === undefined) delete process.env.NO_COLOR;
+		else process.env.NO_COLOR = prevNo;
+		if (prevColor === undefined) delete process.env.COLORTERM;
+		else process.env.COLORTERM = prevColor;
+		setAppearance('auto');
+	}
+});
+
+test('install command and offline warning stay within 80 columns', () => {
+	const checks = [{ id: 'path', ok: false, label: 'CLI on PATH', fix: cliInstallCommand() }];
+	for (const line of formatCheckLine(checks[0], { plain: true }).split('\n')) {
+		assert.ok(displayWidth(line) <= 80, line);
+	}
+	const warning = wrapColumns(
+		'Ollama is offline. Install it from https://ollama.com, run ollama pull qwen2.5:3b, then /doctor.',
+		78,
+	);
+	for (const line of warning) assert.ok(displayWidth(line) <= 78, line);
+	assert.ok(warning.length > 1);
+});
+
+test('an existing workspace folder is a passing check', async () => {
+	const checks = await collectChecks({
+		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
+		workspaceExists: true,
+		cliOnPath: true,
+		totalMem: 8 * GB,
+		platform: 'linux',
+		homeLabel: '~/Copix',
+	});
+	const workspace = checks.find((check) => check.id === 'workspace');
+	assert.equal(workspace.ok, true);
+	assert.equal(workspace.fix, '');
+});
+
+test('a plaintext settings key is moved to the keychain and deleted from the file', async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copix-key-'));
+	const settingsPath = path.join(dir, 'settings.json');
+	fs.writeFileSync(settingsPath, `${JSON.stringify({
+		model: { provider: 'openrouter', apiKey: SECRET, modelId: 'qwen2.5:3b' },
+	}, null, 2)}\n`);
+	let received = '';
+	const migrated = await migratePlaintextKey(settingsPath, async (secret) => {
+		received = secret;
+		return { ok: true, stored: true, message: '' };
+	});
+	const disk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+	assert.equal(received, SECRET);
+	assert.equal(disk.model.apiKey, '');
+	assert.equal(migrated.key, SECRET);
+	assert.equal(migrated.notice, '');
+	assert.equal(JSON.stringify(disk).includes(SECRET), false);
+	fs.writeFileSync(settingsPath, `${JSON.stringify({
+		model: { provider: 'openrouter', apiKey: SECRET, modelId: 'qwen2.5:3b' },
+	}, null, 2)}\n`);
+	const failed = await migratePlaintextKey(settingsPath, async () => ({ ok: false, message: KEYRING_MISSING }));
+	const failedDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+	assert.equal(failed.key, SECRET);
+	assert.equal(failed.notice, KEYRING_MISSING);
+	assert.equal(failedDisk.model.apiKey, '');
+	assert.equal(JSON.stringify(failedDisk).includes(SECRET), false);
+});
+
+test('hidden key entry stays raw if the terminal is restored late', async () => {
+	const input = new EventEmitter();
+	input.isTTY = true;
+	input.isRaw = false;
+	input.setRawMode = (on) => { input.isRaw = on; };
+	input.resume = () => {};
+	input.pause = () => {};
+	const output = { text: '', write(chunk) { this.text += chunk; } };
+	const pending = readHidden('OpenRouter API key (hidden): ', input, output);
+	input.setRawMode(false);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.equal(input.isRaw, true);
+	input.emit('data', 'sekret\r');
+	assert.equal(await pending, 'sekret');
+	assert.equal(output.text.includes('sekret'), false);
 });

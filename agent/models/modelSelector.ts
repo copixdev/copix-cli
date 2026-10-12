@@ -1,5 +1,7 @@
+import os from 'node:os';
 import type { AgentMode } from './agentModes.js';
 import type { ModelSettings } from '../types.js';
+import { eightGbDefaults, recommendModel } from '../../src/ollamaProfile.js';
 import {
 	FALLBACK_MODEL_ID,
 	GROQ_FALLBACK_MODEL,
@@ -113,6 +115,7 @@ export function selectModelForTask(
 	settings: ModelSettings,
 	installed: string[] = [],
 	userMessage?: string,
+	totalMem: number = os.totalmem(),
 ): string {
 	const normalized = normalizeModelSettings(settings);
 	const provider = normalizeProvider(settings.provider);
@@ -143,6 +146,10 @@ export function selectModelForTask(
 	const preferred = taskKind
 		? TASK_MODEL_PREFERENCE[taskKind]
 		: MODE_MODEL_PREFERENCE[agentMode] ?? FALLBACK_MODEL_ID;
+
+	if (eightGbDefaults(totalMem) && normalized.selection !== 'manual') {
+		return recommendModel(totalMem).tag;
+	}
 
 	return pickOllamaModel(
 		[preferred, normalized.modelId || FALLBACK_MODEL_ID],

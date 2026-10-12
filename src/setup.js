@@ -1,7 +1,7 @@
 /**
  * First-run setup and the checks `copix doctor` reprints.
- * Questions take the default on Enter. A model download needs an explicit yes:
- * Y at the prompt (Enter accepts that default), or `--yes` when nobody is there.
+ * Questions take the default on Enter. A model download happens only when
+ * someone answers yes to "Pull it now?" (`--yes` never downloads).
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -13,7 +13,7 @@ import {
 	settingsForDisk,
 } from './keychain.js';
 import { eightGbDefaults, recommendationLines, recommendModel } from './ollamaProfile.js';
-import { cliInstallCommand, dataDirLabel, formatChecks, formatTips, isPlain, setAppearance } from './ui.js';
+import { cliInstallCommand, color, dataDirLabel, formatChecks, formatTips, isPlain, setAppearance } from './ui.js';
 
 export const PROBE_MS = 1500;
 export const PULL_STALL_MS = 20000;
@@ -31,9 +31,15 @@ export const PROVIDER_CHOICES = [
 	{ id: 'openrouter', label: 'OpenRouter' },
 ];
 
-export function shouldPrompt({ tty = false, yes = false, plain = false, ci = false } = {}) {
-	if (yes || !tty || plain || ci) return false;
+export function shouldPrompt({ tty = false, yes = false, ci = false } = {}) {
+	if (yes || !tty || ci) return false;
 	return true;
+}
+
+function savedDisplay(settings) {
+	const mode = settings?.display;
+	if (mode === 'light' || mode === 'dark' || mode === 'plain' || mode === 'auto') return mode;
+	return 'auto';
 }
 
 export function needsSetup(settings, { force = false } = {}) {
@@ -68,7 +74,7 @@ export function shouldPullModel({
 	provider,
 }) {
 	if (provider !== 'ollama' || !ollamaOnline || modelInstalled) return false;
-	if (!interactive) return Boolean(yes);
+	if (!interactive) return false;
 	return pullAccepted(answer);
 }
 
@@ -225,7 +231,7 @@ export async function runSetup({
 		write(value);
 	};
 
-	let display = plain ? 'plain' : 'auto';
+	let display = savedDisplay(settings);
 	if (interactive) {
 		log(choiceBlock(1, 'Colors', COLOR_CHOICES));
 		const answer = await ask('Choice [1]: ');
@@ -254,9 +260,13 @@ export async function runSetup({
 		totalMem,
 		platform,
 	});
-	const checkPlain = display === 'plain' || isPlain();
+	const checkPlain = Boolean(plain) || display === 'plain' || isPlain();
 	log(['3) Setting up Copix', formatChecks(checks, { plain: checkPlain })].join('\n'));
-	for (const line of recommendationLines(totalMem)) log(line);
+	const recommended = recommendationLines(totalMem);
+	log(recommended[0]);
+	for (const extra of recommended.slice(1)) {
+		log(checkPlain ? extra : `${color.hint}${extra}${color.reset}`);
+	}
 
 	const ollamaOnline = checks.some((check) => check.id === 'ollama' && check.ok);
 	const modelInstalled = checks.some((check) => check.id === 'model' && check.ok);
@@ -297,7 +307,7 @@ export async function runSetup({
 		}
 	} else if (provider === 'openrouter') {
 		const loaded = await loadOpenRouterKey(keychain);
-		sessionKey = loaded.key || '';
+		sessionKey = loaded.key || String(settings?.model?.apiKey || '');
 		if (loaded.message && !sessionKey) {
 			keyMessage = loaded.message;
 			log(loaded.message);
@@ -341,7 +351,7 @@ export async function runSetup({
 	};
 }
 
-export async function readHidden(prompt, input = process.stdin, output = process.stdout) {
+export function readLine(prompt, { hidden = false, input = process.stdin, output = process.stdout } = {}) {
 	output.write(prompt);
 	if (!input?.isTTY || typeof input.setRawMode !== 'function') {
 		return new Promise((resolve) => {
@@ -367,7 +377,11 @@ export async function readHidden(prompt, input = process.stdin, output = process
 	}
 	return new Promise((resolve) => {
 		const wasRaw = input.isRaw;
-		input.setRawMode(true);
+		const arm = () => input.setRawMode(true);
+		arm();
+		// Readline restores cooked mode when it closes. Re-apply raw mode
+		// after that so a key typed on the next question cannot echo.
+		const rearms = [0, 30].map((ms) => setTimeout(arm, ms));
 		input.resume();
 		let buf = '';
 		const onData = (chunk) => {
@@ -386,19 +400,28 @@ export async function readHidden(prompt, input = process.stdin, output = process
 					return;
 				}
 				if (ch === '\u007f' || ch === '\b') {
+					if (!hidden && buf) output.write('\b \b');
 					buf = buf.slice(0, -1);
 					continue;
 				}
-				if (ch >= ' ') buf += ch;
+				if (ch >= ' ') {
+					buf += ch;
+					if (!hidden) output.write(ch);
+				}
 			}
 		};
 		const cleanup = () => {
+			for (const timer of rearms) clearTimeout(timer);
 			input.off?.('data', onData);
 			if (input.isTTY) input.setRawMode(Boolean(wasRaw));
 			input.pause?.();
 		};
 		input.on('data', onData);
 	});
+}
+
+export function readHidden(prompt, input = process.stdin, output = process.stdout) {
+	return readLine(prompt, { hidden: true, input, output });
 }
 
 export function doctorKeyLine(status, note) {

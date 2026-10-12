@@ -272,6 +272,11 @@ function wrapText(text, width) {
 	return lines.length ? lines : [''];
 }
 
+/** Wrap plain text so each line fits in `width` columns. */
+export function wrapColumns(text, width = 80) {
+	return wrapText(text, width);
+}
+
 function breakToken(token, width) {
 	if (displayWidth(token) <= width) return [token];
 	const parts = [];
@@ -833,17 +838,22 @@ export function toneMark(ok) {
 
 export const SETUP_TIPS = ['type a request', '/model to switch', '/help for everything'];
 
+function formatFixLines(fix, paint) {
+	const parts = wrapColumns(fix, 78);
+	return parts.map((line) => `  ${paint ? paint(line) : line}`).join('\n');
+}
+
 export function formatCheckLine(check, { plain = isPlain() } = {}) {
 	const label = String(check?.label || '');
 	const fix = String(check?.fix || '');
 	if (plain) {
 		const lines = [`${label}: ${check?.ok ? 'ok' : 'missing'}`];
-		if (!check?.ok && fix) lines.push(`  ${fix}`);
+		if (!check?.ok && fix) lines.push(formatFixLines(fix));
 		return lines.join('\n');
 	}
 	const mark = check?.ok ? `${color.sage}✓${color.reset}` : `${color.clay}✗${color.reset}`;
 	const lines = [`${mark} ${label}`];
-	if (!check?.ok && fix) lines.push(`  ${color.clay}${fix}${color.reset}`);
+	if (!check?.ok && fix) lines.push(formatFixLines(fix, (line) => `${color.clay}${line}${color.reset}`));
 	return lines.join('\n');
 }
 
