@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { helpText, formatChecks, formatTips, setAppearance, setPlain, stripAnsi } from '../src/ui.js';
-import { eightGbDefaults, recommendationLines, unloadOtherModels } from '../src/ollamaProfile.js';
+import { eightGbDefaults, recommendModel, recommendationLines, unloadOtherModels } from '../src/ollamaProfile.js';
 import {
 	KEYRING_MISSING,
 	saveOpenRouterKey,
@@ -41,7 +41,7 @@ test('8 GB recommendation names the quantized tag and marks larger models', () =
 	const lines = recommendationLines(8 * GB);
 	assert.equal(lines[0], 'Recommended for 8 GB: qwen2.5:3b (about 2 GB)');
 	assert.ok(lines.some((line) => line === 'qwen2.5:7b needs 16 GB'));
-	assert.ok(lines.some((line) => line === 'qwen2.5:14b needs 16 GB'));
+	assert.ok(lines.some((line) => line === 'qwen2.5:14b needs 32 GB'));
 	const fitted = eightGbDefaults(8 * GB);
 	assert.equal(fitted.tag, 'qwen2.5:3b');
 	assert.equal(fitted.quant, 'Q4_K_M');
@@ -49,7 +49,19 @@ test('8 GB recommendation names the quantized tag and marks larger models', () =
 	assert.equal(fitted.keepAlive, '5m');
 	assert.equal(fitted.singleModel, true);
 	assert.equal(eightGbDefaults(16 * GB), null);
-	assert.match(recommendationLines(16 * GB)[0], /qwen2\.5:7b \(about 4\.7 GB\) — needs 16 GB/);
+	assert.equal(recommendationLines(16 * GB)[0], 'Recommended for 16 GB: qwen2.5:7b (about 4.7 GB)');
+});
+
+test('a 15 GB machine is not offered a model that needs 16 GB', () => {
+	const total = 15 * GB;
+	const model = recommendModel(total);
+	assert.equal(model.tag, 'qwen2.5:3b');
+	assert.ok(model.ram <= 15);
+	const lines = recommendationLines(total);
+	assert.equal(lines[0], 'Recommended for 15 GB: qwen2.5:3b (about 2 GB)');
+	assert.ok(lines.some((line) => line === 'qwen2.5:7b needs 16 GB'));
+	assert.equal(lines.some((line) => line.startsWith('qwen2.5:7b (')), false);
+	assert.equal(recommendModel(16 * GB).tag, 'qwen2.5:7b');
 });
 
 test('Enter takes the numbered default, and a pull needs yes', () => {
@@ -359,4 +371,79 @@ test('collectChecks reports the four setup rows', async () => {
 	assert.equal(checks[1].fix, 'ollama pull qwen2.5:3b');
 	assert.equal(checks[2].fix, 'mkdir -p ~/Copix');
 	assert.match(checks[3].fix, /install\.sh/);
+});
+
+test('the pull hint names the same tag setup saves', async () => {
+	const totalMem = 15 * GB;
+	const checks = await collectChecks({
+		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
+		workspaceExists: true,
+		cliOnPath: true,
+		totalMem,
+		platform: 'linux',
+		homeLabel: '~/Copix',
+	});
+	const result = await runSetup({
+		settings: { model: { provider: 'ollama', modelId: 'qwen2.5:7b', apiKey: '' } },
+		tty: false,
+		yes: false,
+		totalMem,
+		workspaceExists: true,
+		cliOnPath: true,
+		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
+		ask: async () => { throw new Error('prompted'); },
+		applyDisplay() {},
+		write() {},
+	});
+	assert.equal(checks[1].fix, 'ollama pull qwen2.5:3b');
+	assert.equal(result.disk.model.modelId, 'qwen2.5:3b');
+	assert.equal(checks[1].fix, `ollama pull ${result.disk.model.modelId}`);
+
+	const sixteen = 16 * GB;
+	const wideChecks = await collectChecks({
+		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
+		workspaceExists: true,
+		cliOnPath: true,
+		totalMem: sixteen,
+		platform: 'linux',
+		homeLabel: '~/Copix',
+	});
+	const wide = await runSetup({
+		settings: { model: { provider: 'ollama', modelId: 'qwen2.5:3b', apiKey: '' } },
+		tty: false,
+		yes: false,
+		totalMem: sixteen,
+		workspaceExists: true,
+		cliOnPath: true,
+		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [] }) }),
+		ask: async () => { throw new Error('prompted'); },
+		applyDisplay() {},
+		write() {},
+	});
+	assert.equal(wide.disk.model.modelId, 'qwen2.5:7b');
+	assert.equal(wideChecks[1].fix, `ollama pull ${wide.disk.model.modelId}`);
+});
+
+test('keychain writes keep the secret out of the command arguments', async () => {
+	for (const platform of ['darwin', 'linux', 'win32']) {
+		const calls = [];
+		const saved = await saveOpenRouterKey(SECRET, {
+			available: true,
+			platform,
+			env: {},
+			run: async (bin, args, opts = {}) => {
+				calls.push({ bin, args: [...args], input: opts.input });
+				return { code: 0, out: '', err: '' };
+			},
+		});
+		assert.equal(saved.ok, true, platform);
+		assert.equal(calls.length, 1, platform);
+		const { args, input } = calls[0];
+		assert.equal(args.some((arg) => String(arg).includes(SECRET)), false, platform);
+		assert.equal(String(input || '').includes(SECRET), true, platform);
+		if (platform === 'darwin') {
+			assert.equal(args.at(-1), '-w');
+			assert.equal(input, `${SECRET}\n${SECRET}\n`);
+		}
+	}
 });

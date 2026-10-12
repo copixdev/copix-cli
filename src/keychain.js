@@ -157,15 +157,19 @@ async function writeKey(secret, opts) {
 	const platform = opts.platform || process.platform;
 	const run = opts.run || defaultRun;
 	if (platform === 'darwin') {
+		// `-w` with no argument makes `security` read the password, then the
+		// confirmation, from stdin. The key must not be an argv element, or
+		// it shows up in `ps`.
 		const res = await run('security', [
 			'add-generic-password', '-U',
 			'-s', KEYCHAIN_SERVICE,
 			'-a', KEYCHAIN_ACCOUNT,
-			'-w', secret,
-		]);
+			'-w',
+		], { input: `${secret}\n${secret}\n` });
 		return res.code === 0;
 	}
 	if (platform === 'linux') {
+		// secret-tool reads the secret from stdin, not argv.
 		const res = await run('secret-tool', [
 			'store', '--label=Copix OpenRouter',
 			'service', KEYCHAIN_SERVICE,
@@ -174,6 +178,7 @@ async function writeKey(secret, opts) {
 		return res.code === 0;
 	}
 	if (platform === 'win32') {
+		// CredWrite reads the secret from stdin. It is not a process argument.
 		const res = await run('powershell.exe', [
 			'-NoLogo', '-NoProfile', '-Command', WINDOWS_SCRIPT,
 		], { input: secret, env: { COPIX_KEY_ACTION: 'save' } });

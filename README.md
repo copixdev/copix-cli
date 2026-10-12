@@ -42,7 +42,7 @@ copix doctor                  # rerun the setup checks
 copix setup                   # run first-run setup again
 ```
 
-The first launch asks four things, and Enter accepts the default: colors (auto, light terminal, dark terminal, or plain), provider (Ollama, or OpenRouter), the setup checks, then three tips. The checks are Ollama, a model, the `~/Copix` folder, and `copix` on your PATH. A missing model shows the download size and asks `Pull it now? [Y/n]`. On an 8 GB machine the suggestion is `qwen2.5:3b` (about 2 GB). Larger tags are marked `needs 16 GB`. With no terminal, or in plain mode, Copix prints the checks and the fix commands and does not ask. `--yes` accepts the defaults and is the explicit yes to pull.
+The first launch asks four things, and Enter accepts the default: colors (auto, light terminal, dark terminal, or plain), provider (Ollama, or OpenRouter), the setup checks, then three tips. The checks are Ollama, a model, the `~/Copix` folder, and `copix` on your PATH. A missing model shows the download size and asks `Pull it now? [Y/n]`. Copix suggests the largest tag that fits the machine's RAM, so a 15 GB machine stays on `qwen2.5:3b` (about 2 GB) and a tag that needs more is marked, for example `needs 16 GB`. With no terminal, or in plain mode, Copix prints the checks and the fix commands and does not ask. `--yes` accepts the defaults and is the explicit yes to pull.
 
 An OpenRouter key is stored in the macOS Keychain, Windows Credential Manager, or Linux Secret Service. It is not written to `settings.json`, and `copix doctor` only says whether the key is set. If the system has no keyring, set `OPENROUTER_API_KEY` in the environment.
 

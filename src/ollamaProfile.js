@@ -7,32 +7,45 @@ import os from 'node:os';
 const GB = 1024 ** 3;
 
 export const MODELS = [
-	{ tag: 'qwen2.5:3b', ram: 8, size: 'about 2 GB', quant: 'Q4_K_M', needs16: false },
-	{ tag: 'qwen2.5:7b', ram: 16, size: 'about 4.7 GB', quant: 'Q4_K_M', needs16: true },
-	{ tag: 'qwen2.5:14b', ram: 32, size: 'about 9 GB', quant: 'Q4_K_M', needs16: true },
+	{ tag: 'qwen2.5:3b', ram: 8, size: 'about 2 GB', quant: 'Q4_K_M' },
+	{ tag: 'qwen2.5:7b', ram: 16, size: 'about 4.7 GB', quant: 'Q4_K_M' },
+	{ tag: 'qwen2.5:14b', ram: 32, size: 'about 9 GB', quant: 'Q4_K_M' },
 ];
+
+function ramGb(totalBytes = os.totalmem()) {
+	const gb = Number(totalBytes) / GB;
+	if (!Number.isFinite(gb) || gb < 0) return 0;
+	return gb;
+}
 
 /** 8 GB class is anything under 12 GB (machines often report ~7.6–8). */
 export function ramClass(totalBytes = os.totalmem()) {
-	const gb = Number(totalBytes) / GB;
-	if (!Number.isFinite(gb) || gb < 12) return 8;
+	const gb = ramGb(totalBytes);
+	if (gb < 12) return 8;
 	if (gb < 24) return 16;
 	return 32;
 }
 
+/** Largest tag whose RAM requirement fits. The smallest tag is the floor. */
 export function recommendModel(totalBytes = os.totalmem()) {
-	const cls = ramClass(totalBytes);
-	return MODELS.find((model) => model.ram === cls) || MODELS[0];
+	const gb = ramGb(totalBytes);
+	let fit = MODELS[0];
+	for (const model of MODELS) {
+		if (gb >= model.ram) fit = model;
+	}
+	return fit;
 }
 
 export function recommendationLines(totalBytes = os.totalmem()) {
-	const cls = ramClass(totalBytes);
+	const gb = ramGb(totalBytes);
 	const model = recommendModel(totalBytes);
+	const shown = Math.max(1, Math.floor(gb));
 	const lines = [
-		`Recommended for ${cls} GB: ${model.tag} (${model.size})${model.needs16 ? ' — needs 16 GB' : ''}`,
+		`Recommended for ${shown} GB: ${model.tag} (${model.size})`,
 	];
 	for (const other of MODELS) {
-		if (other.ram > cls && other.needs16) lines.push(`${other.tag} needs 16 GB`);
+		if (other.tag === model.tag) continue;
+		if (other.ram > gb) lines.push(`${other.tag} needs ${other.ram} GB`);
 	}
 	return lines;
 }

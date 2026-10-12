@@ -307,12 +307,14 @@ export async function runSetup({
 	log(['4) Tips', formatTips({ plain: checkPlain || isPlain() })].join('\n'));
 
 	const previous = settings?.model && typeof settings.model === 'object' ? settings.model : {};
-	let modelId = previous.modelId || recommendModel(totalMem).tag;
-	if (provider === 'openrouter' && !String(modelId).includes('/') && !String(modelId).startsWith('~')) {
-		modelId = OPENROUTER_DEFAULT_MODEL;
-	}
-	if (provider === 'ollama' && /[/~]/.test(String(modelId))) {
-		modelId = recommendModel(totalMem).tag;
+	// The pull hint in collectChecks uses this same tag.
+	const fittedTag = recommendModel(totalMem).tag;
+	let modelId = fittedTag;
+	if (provider === 'openrouter') {
+		const previousId = String(previous.modelId || '');
+		modelId = (previousId.includes('/') || previousId.startsWith('~'))
+			? previousId
+			: OPENROUTER_DEFAULT_MODEL;
 	}
 	const sessionModel = applyMemoryProfile({
 		...previous,
