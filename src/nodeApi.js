@@ -14,28 +14,47 @@ const SETTINGS_PATH = path.join(COPIX_DIR, 'settings.json');
 
 /**
  * Move a plaintext OpenRouter key out of settings.json and into the keychain.
- * The file is rewritten with an empty apiKey. The key itself is returned so
- * the current process can still use it when the keyring save fails.
+ * The file is cleared only after a confirmed keychain write. On failure the
+ * plaintext copy stays, and the key is returned for the current process.
  */
 export async function migratePlaintextKey(settingsPath, saveKey = saveOpenRouterKey) {
 	let raw;
 	try {
 		raw = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
 	} catch {
-		return { key: '', notice: '' };
+		return { key: '', notice: '', stored: false };
 	}
 	const fileKey = String(raw?.model?.apiKey || '').trim();
-	if (!fileKey) return { key: '', notice: '' };
+	if (!fileKey) return { key: '', notice: '', stored: false };
 	let notice = '';
+	let stored = false;
 	try {
 		const saved = await saveKey(fileKey);
-		if (!saved?.ok && saved?.message) notice = saved.message;
+		stored = Boolean(saved?.ok && saved?.stored);
+		if (!stored && saved?.message) notice = saved.message;
 	} catch {
-		notice = '';
+		stored = false;
 	}
+	if (!stored) return { key: fileKey, notice, stored: false };
 	raw.model.apiKey = '';
 	await fs.writeFile(settingsPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
-	return { key: fileKey, notice };
+	return { key: fileKey, notice, stored: true };
+}
+
+/**
+ * Settings object about to be written. A blank apiKey does not erase a
+ * plaintext key that the keychain has not accepted yet. `keyStored` clears it.
+ */
+export function mergeSettingsForDisk(previous, next) {
+	const stored = JSON.parse(JSON.stringify(next ?? {}));
+	delete stored.keyNotice;
+	const keyStored = Boolean(stored.keyStored);
+	delete stored.keyStored;
+	const existingKey = String(previous?.model?.apiKey || '').trim();
+	if (stored.model && typeof stored.model === 'object') {
+		stored.model.apiKey = keyStored ? '' : existingKey;
+	}
+	return stored;
 }
 
 /** Users-directory prefix for a mistaken `/user/...` path. macOS and Windows differ; Linux does too. */
@@ -433,9 +452,13 @@ export function createNodeCopixApi() {
 		},
 		setSettings: async (settings) => {
 			await fs.mkdir(COPIX_DIR, { recursive: true });
-			const stored = JSON.parse(JSON.stringify(settings ?? {}));
-			delete stored.keyNotice;
-			if (stored.model && typeof stored.model === 'object') stored.model.apiKey = '';
+			let previous = {};
+			try {
+				previous = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
+			} catch {
+				previous = {};
+			}
+			const stored = mergeSettingsForDisk(previous, settings);
 			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
 		},
 		loadChatSessions: async () => {

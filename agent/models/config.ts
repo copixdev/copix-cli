@@ -50,7 +50,7 @@ export interface ModelConfig {
 	singleModel?: boolean;
 }
 
-export function settingsToConfig(model: ModelSettings, modelId?: string): ModelConfig {
+export function settingsToConfig(model: ModelSettings, modelId?: string, totalMem: number = os.totalmem()): ModelConfig {
 	const provider = normalizeProvider(model.provider);
 	let resolved = modelId ?? (model.modelId || FALLBACK_MODEL_ID);
 	if (provider === 'groq') resolved = sanitizeGroqModelId(resolved);
@@ -87,7 +87,7 @@ export function settingsToConfig(model: ModelSettings, modelId?: string): ModelC
 	}
 
 	const lowVram = Boolean(model.lowVram);
-	const fitted = eightGbDefaults(os.totalmem());
+	const fitted = eightGbDefaults(totalMem);
 	return {
 		model: resolved,
 		baseUrl: OLLAMA_BASE_URL,
@@ -105,14 +105,15 @@ export function resolveModelConfig(
 	agentMode: AgentMode,
 	installed: string[] = [],
 	userMessage?: string,
-	opts?: { hasImages?: boolean },
+	opts?: { hasImages?: boolean; totalMem?: number },
 ): ModelConfig {
-	let modelId = selectModelForTask(agentMode, model, installed, userMessage);
+	const totalMem = opts?.totalMem ?? os.totalmem();
+	let modelId = selectModelForTask(agentMode, model, installed, userMessage, totalMem);
 	const provider = normalizeProvider(model.provider);
 	if (opts?.hasImages && provider === 'groq') {
 		modelId = GROQ_VISION_MODEL;
 	}
-	return settingsToConfig(model, modelId);
+	return settingsToConfig(model, modelId, totalMem);
 }
 
 export function resolveChatUrl(config: ModelConfig): string {

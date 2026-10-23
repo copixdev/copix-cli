@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { helpText, cliInstallCommand, displayWidth, formatCheckLine, formatChecks, formatTips, setAppearance, setPlain, stripAnsi, wrapColumns } from '../src/ui.js';
-import { eightGbDefaults, recommendModel, recommendationLines, unloadOtherModels } from '../src/ollamaProfile.js';
+import { eightGbDefaults, fitInstalledModel, ramClass, recommendModel, recommendationLines, unloadOtherModels } from '../src/ollamaProfile.js';
 import {
 	KEYRING_MISSING,
+	KEYRING_WRITE_FAILED,
 	saveOpenRouterKey,
 	settingsForDisk,
 } from '../src/keychain.js';
-import { migratePlaintextKey } from '../src/nodeApi.js';
+import { mergeSettingsForDisk, migratePlaintextKey } from '../src/nodeApi.js';
 import {
 	collectChecks,
 	needsSetup,
@@ -53,6 +54,14 @@ test('8 GB recommendation names the quantized tag and marks larger models', () =
 	assert.equal(fitted.keepAlive, '5m');
 	assert.equal(fitted.singleModel, true);
 	assert.equal(eightGbDefaults(16 * GB), null);
+	assert.equal(ramClass(8 * GB), 8);
+	assert.equal(ramClass(16 * GB), 16);
+	const mid = eightGbDefaults(15 * GB);
+	assert.equal(mid.tag, 'qwen2.5:3b');
+	assert.equal(mid.numCtx, 4096);
+	assert.equal(mid.keepAlive, '5m');
+	assert.equal(mid.singleModel, true);
+	assert.equal(ramClass(15 * GB), 8);
 	assert.equal(recommendationLines(16 * GB)[0], 'Recommended for 16 GB: qwen2.5:7b (about 4.7 GB)');
 });
 
@@ -66,6 +75,11 @@ test('a 15 GB machine is not offered a model that needs 16 GB', () => {
 	assert.ok(lines.some((line) => line === 'qwen2.5:7b needs 16 GB'));
 	assert.equal(lines.some((line) => line.startsWith('qwen2.5:7b (')), false);
 	assert.equal(recommendModel(16 * GB).tag, 'qwen2.5:7b');
+	assert.equal(recommendModel(16780574720).tag, 'qwen2.5:3b');
+	assert.equal(ramClass(16780574720), 8);
+	assert.equal(fitInstalledModel('qwen2.5:3b', ['qwen2.5-coder:7b'], 8 * GB), 'qwen2.5:3b');
+	assert.equal(fitInstalledModel('qwen2.5-coder:7b', ['qwen2.5-coder:7b'], 15 * GB), 'qwen2.5:3b');
+	assert.equal(fitInstalledModel('qwen2.5-coder:7b', ['qwen2.5:3b', 'qwen2.5-coder:7b'], 16 * GB), 'qwen2.5-coder:7b');
 });
 
 test('Enter takes the numbered default, and a pull needs yes', () => {
@@ -325,6 +339,33 @@ test('OpenRouter key is hidden, stored via the keyring, and kept out of settings
 	assert.equal(settingsForDisk({ model: { apiKey: SECRET, modelId: 'x' } }).model.apiKey, '');
 });
 
+test('a failed keychain save keeps an existing settings key', async () => {
+	const result = await runSetup({
+		settings: { model: { provider: 'openrouter', modelId: 'qwen2.5:3b', apiKey: SECRET } },
+		tty: true,
+		totalMem: 8 * GB,
+		workspaceExists: true,
+		cliOnPath: true,
+		fetchImpl: async () => ({ ok: true, json: async () => ({ models: [{ name: 'qwen2.5:3b' }] }) }),
+		ask: async () => '2',
+		askSecret: async () => SECRET,
+		applyDisplay() {},
+		write() {},
+		keychain: {
+			available: true,
+			platform: 'linux',
+			env: {},
+			run: async () => ({ code: 1, out: '', err: '' }),
+		},
+	});
+	const printed = result.lines.join('\n');
+	assert.equal(printed.includes(SECRET), false);
+	assert.match(printed, /system keychain/);
+	assert.equal(result.disk.model.apiKey, SECRET);
+	assert.equal(result.disk.keyStored, undefined);
+	assert.equal(result.session.model.apiKey, SECRET);
+});
+
 test('a missing keyring falls back to OPENROUTER_API_KEY without echoing the typed key', async () => {
 	const result = await runSetup({
 		settings: {},
@@ -348,6 +389,16 @@ test('a missing keyring falls back to OPENROUTER_API_KEY without echoing the typ
 	assert.equal(saved.ok, false);
 	assert.equal(saved.message, KEYRING_MISSING);
 	assert.equal(saved.message.includes(SECRET), false);
+	const refused = await saveOpenRouterKey(SECRET, {
+		available: true,
+		platform: 'linux',
+		env: {},
+		run: async () => ({ code: 1, out: '', err: '' }),
+	});
+	assert.equal(refused.ok, false);
+	assert.equal(refused.stored, false);
+	assert.equal(refused.message, KEYRING_WRITE_FAILED);
+	assert.equal(refused.message.includes(SECRET), false);
 });
 
 test('hidden key entry does not echo characters', async () => {
@@ -415,6 +466,7 @@ test('the pull hint names the same tag setup saves', async () => {
 	});
 	assert.equal(checks[1].fix, 'ollama pull qwen2.5:3b');
 	assert.equal(result.disk.model.modelId, 'qwen2.5:3b');
+	assert.equal(result.disk.model.lowVram, true);
 	assert.equal(checks[1].fix, `ollama pull ${result.disk.model.modelId}`);
 
 	const sixteen = 16 * GB;
@@ -571,6 +623,7 @@ test('a plaintext settings key is moved to the keychain and deleted from the fil
 	assert.equal(disk.model.apiKey, '');
 	assert.equal(migrated.key, SECRET);
 	assert.equal(migrated.notice, '');
+	assert.equal(migrated.stored, true);
 	assert.equal(JSON.stringify(disk).includes(SECRET), false);
 	fs.writeFileSync(settingsPath, `${JSON.stringify({
 		model: { provider: 'openrouter', apiKey: SECRET, modelId: 'qwen2.5:3b' },
@@ -578,9 +631,27 @@ test('a plaintext settings key is moved to the keychain and deleted from the fil
 	const failed = await migratePlaintextKey(settingsPath, async () => ({ ok: false, message: KEYRING_MISSING }));
 	const failedDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
 	assert.equal(failed.key, SECRET);
+	assert.equal(failed.stored, false);
 	assert.equal(failed.notice, KEYRING_MISSING);
-	assert.equal(failedDisk.model.apiKey, '');
-	assert.equal(JSON.stringify(failedDisk).includes(SECRET), false);
+	assert.equal(failedDisk.model.apiKey, SECRET);
+	assert.equal(JSON.stringify(failedDisk).includes(SECRET), true);
+	const rewritten = mergeSettingsForDisk(failedDisk, {
+		model: { provider: 'openrouter', apiKey: '', modelId: 'qwen2.5:3b' },
+	});
+	assert.equal(rewritten.model.apiKey, SECRET);
+	assert.equal(rewritten.keyStored, undefined);
+	const cleared = mergeSettingsForDisk(failedDisk, {
+		keyStored: true,
+		model: { provider: 'openrouter', apiKey: SECRET, modelId: 'qwen2.5:3b' },
+	});
+	assert.equal(cleared.model.apiKey, '');
+	assert.equal(cleared.keyStored, undefined);
+	assert.equal(JSON.stringify(cleared).includes(SECRET), false);
+	const memoryOnly = mergeSettingsForDisk(
+		{ model: { apiKey: '' } },
+		{ model: { apiKey: SECRET } },
+	);
+	assert.equal(memoryOnly.model.apiKey, '');
 });
 
 test('hidden key entry stays raw if the terminal is restored late', async () => {

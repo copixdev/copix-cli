@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { keyStatusLabel, loadOpenRouterKey } from './keychain.js';
+import { fitInstalledModel } from './ollamaProfile.js';
 import { installNodeCopixApi } from './nodeApi.js';
 import * as ui from './ui.js';
 import { copyText } from './clipboard.js';
@@ -165,14 +166,6 @@ async function installedTags(api) {
 	}
 }
 
-function pickInstalledFallback(installed) {
-	if (!installed.length) return FALLBACK_MODEL;
-	const exact = installed.find((m) => m === FALLBACK_MODEL || m.startsWith(`${FALLBACK_MODEL}`));
-	if (exact) return FALLBACK_MODEL;
-	const qwen = installed.find((m) => m.startsWith('qwen2.5:') || m.startsWith('qwen2.5-'));
-	return qwen?.split(':').length ? qwen : installed[0];
-}
-
 // ---------------------------------------------------------------------------
 // Shared session store (~/Copix/sessions.json) — same shape as Desktop.
 
@@ -245,12 +238,15 @@ async function runOne({
 		prompt,
 	);
 
-	// Hard safety: never call a model that is clearly not installed.
+	// Auto stays on a tag that fits this machine. A missing recommendation is
+	// left in place so the chat can ask for a pull instead of a larger model.
 	if (
-		installedModels.length > 0
-		&& !installedModels.some((m) => m === config.model || m.startsWith(`${config.model}`) || m.startsWith(`${config.model.split(':')[0]}:`))
+		config.provider === 'ollama'
+		&& settings?.model?.selection !== 'manual'
+		&& installedModels.length > 0
 	) {
-		config = { ...config, model: pickInstalledFallback(installedModels) };
+		const next = fitInstalledModel(config.model, installedModels);
+		if (next !== config.model) config = { ...config, model: next };
 	}
 
 	ui.writeModelLine(config.model, config.provider === 'ollama' ? 'local' : config.provider);
@@ -716,11 +712,12 @@ async function hydrateKey(settings, api) {
 	const fileKey = String(settings?.model?.apiKey || '');
 	const notice = String(settings?.keyNotice || '');
 	if (notice) console.log(notice);
-	if (fileKey) {
-		const { keyNotice, ...rest } = settings;
-		await api.setSettings({ ...rest, model: { ...settings.model, apiKey: '' } });
-	}
 	const loaded = await loadOpenRouterKey();
+	const keychainHasIt = loaded?.source === 'keychain' && Boolean(String(loaded.key || '').trim());
+	if (fileKey && keychainHasIt) {
+		const { keyNotice, ...rest } = settings;
+		await api.setSettings({ ...rest, keyStored: true, model: { ...settings.model, apiKey: '' } });
+	}
 	if (loaded.message && settings?.model?.provider === 'openrouter' && !fileKey) {
 		console.log(loaded.message);
 	}

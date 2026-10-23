@@ -296,14 +296,18 @@ export async function runSetup({
 	}
 
 	let sessionKey = '';
+	let keyStored = false;
+	let keySaveFailed = false;
 	if (provider === 'openrouter' && typedKey) {
 		const saved = await saveOpenRouterKey(typedKey, keychain);
-		if (saved.ok) sessionKey = typedKey;
+		keyStored = Boolean(saved?.ok && saved?.stored);
+		if (keyStored) sessionKey = typedKey;
 		else if (saved.message) {
+			keySaveFailed = true;
 			keyMessage = saved.message;
 			log(saved.message);
 			const loaded = await loadOpenRouterKey(keychain);
-			sessionKey = loaded.key || '';
+			sessionKey = loaded.key || String(settings?.model?.apiKey || '');
 		}
 	} else if (provider === 'openrouter') {
 		const loaded = await loadOpenRouterKey(keychain);
@@ -339,6 +343,11 @@ export async function runSetup({
 		model: sessionModel,
 	};
 	const disk = settingsForDisk(session);
+	if (keyStored) disk.keyStored = true;
+	else if (keySaveFailed) {
+		const existingKey = String(settings?.model?.apiKey || '').trim();
+		if (existingKey && disk.model) disk.model.apiKey = existingKey;
+	}
 	return {
 		disk,
 		session,

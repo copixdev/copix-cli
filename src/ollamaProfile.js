@@ -18,11 +18,14 @@ function ramGb(totalBytes = os.totalmem()) {
 	return gb;
 }
 
-/** 8 GB class is anything under 12 GB (machines often report ~7.6–8). */
+/**
+ * RAM class follows recommendModel. Under 16 GB the fit is the 3B tag,
+ * under 32 GB the 7B tag, and 32 GB and up the 14B tag.
+ */
 export function ramClass(totalBytes = os.totalmem()) {
-	const gb = ramGb(totalBytes);
-	if (gb < 12) return 8;
-	if (gb < 24) return 16;
+	const ram = recommendModel(totalBytes).ram;
+	if (ram <= 8) return 8;
+	if (ram <= 16) return 16;
 	return 32;
 }
 
@@ -50,15 +53,53 @@ export function recommendationLines(totalBytes = os.totalmem()) {
 	return lines;
 }
 
+/** Parameter size in billions from a tag such as `qwen2.5-coder:7b`. */
+export function modelBillions(tag) {
+	const match = String(tag || '').match(/(\d+(?:\.\d+)?)b\b/i);
+	if (!match) return null;
+	const value = Number(match[1]);
+	return Number.isFinite(value) ? value : null;
+}
+
+/** True when `tag` is no larger than the model recommendModel would save. */
+export function modelFitsTier(tag, totalBytes = os.totalmem()) {
+	const cap = modelBillions(recommendModel(totalBytes).tag);
+	if (cap == null) return true;
+	const size = modelBillions(tag);
+	if (size == null) return false;
+	return size <= cap;
+}
+
+function tagInstalled(tag, installed) {
+	const want = String(tag || '');
+	if (!want) return false;
+	return installed.some((name) => name === want || name.startsWith(`${want}:`));
+}
+
 /**
- * 8 GB profile: Q4_K_M tag, num_ctx 4096, keep_alive 5m, never a second model.
- * Returns null on larger machines.
+ * Installed tag Auto may call. A missing recommendation stays put so the
+ * caller can ask for a pull. A larger installed tag is never a substitute.
+ */
+export function fitInstalledModel(selected, installed, totalBytes = os.totalmem()) {
+	const list = Array.isArray(installed) ? installed.map(String) : [];
+	const safe = recommendModel(totalBytes).tag;
+	const chosen = String(selected || safe);
+	if (modelFitsTier(chosen, totalBytes) && tagInstalled(chosen, list)) return chosen;
+	if (tagInstalled(safe, list)) return safe;
+	return safe;
+}
+
+/**
+ * 3B profile: Q4_K_M tag, num_ctx 4096, keep_alive 5m, never a second model.
+ * Applies whenever recommendModel is still qwen2.5:3b (under 16 GB).
+ * Returns null once a larger tag fits.
  */
 export function eightGbDefaults(totalBytes = os.totalmem()) {
-	if (ramClass(totalBytes) !== 8) return null;
+	const model = recommendModel(totalBytes);
+	if (model.tag !== 'qwen2.5:3b') return null;
 	return {
-		tag: 'qwen2.5:3b',
-		quant: 'Q4_K_M',
+		tag: model.tag,
+		quant: model.quant,
 		numCtx: 4096,
 		keepAlive: '5m',
 		singleModel: true,

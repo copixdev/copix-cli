@@ -1,7 +1,8 @@
 /**
  * OpenRouter API key storage.
  * macOS Keychain, Windows Credential Manager, Linux Secret Service.
- * The key is never written to settings.json and never returned in user-facing messages.
+ * A new key is not written to settings.json. An existing plaintext key stays
+ * there until a keychain write succeeds. Messages never include the key.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -11,6 +12,7 @@ export const KEYCHAIN_SERVICE = 'copix-openrouter';
 export const KEYCHAIN_ACCOUNT = 'copix';
 export const KEYRING_MISSING = 'No system keyring available. Set OPENROUTER_API_KEY in the environment.';
 export const KEYRING_ENV = 'No system keyring available. Using OPENROUTER_API_KEY from the environment.';
+export const KEYRING_WRITE_FAILED = 'Could not save the OpenRouter key to the system keychain. An existing settings key stays in place until that save succeeds.';
 
 const KEYCHAIN_TIMEOUT_MS = 8000;
 
@@ -253,10 +255,10 @@ export async function saveOpenRouterKey(secret, opts = {}) {
 	}
 	try {
 		const ok = await writeKey(value, opts);
-		if (!ok) return { ok: false, stored: false, message: fallbackMessage(env) };
+		if (!ok) return { ok: false, stored: false, message: KEYRING_WRITE_FAILED };
 		return { ok: true, stored: true, message: '' };
 	} catch {
-		return { ok: false, stored: false, message: fallbackMessage(env) };
+		return { ok: false, stored: false, message: KEYRING_WRITE_FAILED };
 	}
 }
 

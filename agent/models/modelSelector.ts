@@ -1,7 +1,7 @@
 import os from 'node:os';
 import type { AgentMode } from './agentModes.js';
 import type { ModelSettings } from '../types.js';
-import { eightGbDefaults, recommendModel } from '../../src/ollamaProfile.js';
+import { modelFitsTier, recommendModel } from '../../src/ollamaProfile.js';
 import {
 	FALLBACK_MODEL_ID,
 	GROQ_FALLBACK_MODEL,
@@ -86,27 +86,28 @@ function pickOllamaModel(
 	candidates: string[],
 	installed: string[],
 	lowVram: boolean,
-	settingsModelId?: string,
+	settingsModelId: string | undefined,
+	totalMem: number,
 ): string {
+	const safe = recommendModel(totalMem).tag;
 	// Unknown install list — never stretch to models that may 404.
 	if (installed.length === 0) {
-		return settingsModelId?.trim() || FALLBACK_MODEL_ID;
+		return settingsModelId?.trim() || safe;
 	}
 
 	const seen = new Set<string>();
 	const ordered = lowVram
-		? [...candidates, settingsModelId, 'qwen3.5:4b', FALLBACK_MODEL_ID]
-		: [...candidates, settingsModelId, FALLBACK_MODEL_ID, 'qwen3.5:4b', 'qwen2.5-coder:7b', 'mistral:7b'];
+		? [...candidates, settingsModelId, 'qwen3.5:4b', safe]
+		: [...candidates, settingsModelId, safe, 'qwen3.5:4b', 'qwen2.5-coder:7b', 'mistral:7b'];
 
 	for (const id of ordered) {
 		if (!id || seen.has(id)) continue;
 		seen.add(id);
+		if (!modelFitsTier(id, totalMem)) continue;
 		if (modelIsAvailable(id, installed)) return id;
 	}
 
-	if (settingsModelId && modelIsAvailable(settingsModelId, installed)) return settingsModelId;
-	if (modelIsAvailable(FALLBACK_MODEL_ID, installed)) return FALLBACK_MODEL_ID;
-	return installed[0]!;
+	return safe;
 }
 
 /** Pick the model tag for this agent turn. */
@@ -147,15 +148,17 @@ export function selectModelForTask(
 		? TASK_MODEL_PREFERENCE[taskKind]
 		: MODE_MODEL_PREFERENCE[agentMode] ?? FALLBACK_MODEL_ID;
 
-	if (eightGbDefaults(totalMem) && normalized.selection !== 'manual') {
-		return recommendModel(totalMem).tag;
-	}
+	const recommended = recommendModel(totalMem);
+	// Wizard and Auto share recommendModel. Below 16 GB that tag is qwen2.5:3b,
+	// installed or not, so a larger local tag is never a silent upgrade.
+	if (recommended.tag === 'qwen2.5:3b') return recommended.tag;
 
 	return pickOllamaModel(
 		[preferred, normalized.modelId || FALLBACK_MODEL_ID],
 		installed,
 		Boolean(normalized.lowVram),
 		normalized.modelId || FALLBACK_MODEL_ID,
+		totalMem,
 	);
 }
 
