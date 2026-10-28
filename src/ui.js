@@ -18,6 +18,34 @@ const RGB = {
 	hint: [125, 125, 125],
 };
 
+const PALETTES = {
+	auto: { clay: [196, 101, 74], sage: [110, 127, 98], hint: [125, 125, 125] },
+	dark: { clay: [212, 132, 106], sage: [156, 176, 142], hint: [168, 168, 168] },
+	light: { clay: [140, 62, 40], sage: [56, 86, 48], hint: [70, 70, 70] },
+};
+
+function usePalette(name) {
+	const src = PALETTES[name] || PALETTES.auto;
+	RGB.clay.splice(0, 3, ...src.clay);
+	RGB.sage.splice(0, 3, ...src.sage);
+	RGB.hint.splice(0, 3, ...src.hint);
+}
+
+/** auto / light / dark recolor the palette. plain, and NO_COLOR, turn color off. */
+export function setAppearance(mode) {
+	const named = mode === 'light' || mode === 'dark' ? mode : 'auto';
+	usePalette(named);
+	if (mode === 'plain' || (process.env.NO_COLOR !== undefined && mode !== 'light' && mode !== 'dark')) {
+		setPlain(true);
+		return;
+	}
+	if (process.env.NO_COLOR !== undefined) {
+		setPlain(true);
+		return;
+	}
+	setPlain(false);
+}
+
 const CUBE = [0, 95, 135, 175, 215, 255];
 
 /** Closest xterm cube or gray-ramp index. System colors 0–15 are terminal-defined, so they are skipped. */
@@ -242,6 +270,11 @@ function wrapText(text, width) {
 		if (cur) lines.push(cur);
 	}
 	return lines.length ? lines : [''];
+}
+
+/** Wrap plain text so each line fits in `width` columns. */
+export function wrapColumns(text, width = 80) {
+	return wrapText(text, width);
 }
 
 function breakToken(token, width) {
@@ -803,6 +836,36 @@ export function toneMark(ok) {
 	return `${color.hint}${DOT}${color.reset}`;
 }
 
+export const SETUP_TIPS = ['type a request', '/model to switch', '/help for everything'];
+
+function formatFixLines(fix, paint) {
+	const parts = wrapColumns(fix, 78);
+	return parts.map((line) => `  ${paint ? paint(line) : line}`).join('\n');
+}
+
+export function formatCheckLine(check, { plain = isPlain() } = {}) {
+	const label = String(check?.label || '');
+	const fix = String(check?.fix || '');
+	if (plain) {
+		const lines = [`${label}: ${check?.ok ? 'ok' : 'missing'}`];
+		if (!check?.ok && fix) lines.push(formatFixLines(fix));
+		return lines.join('\n');
+	}
+	const mark = check?.ok ? `${color.sage}✓${color.reset}` : `${color.clay}✗${color.reset}`;
+	const lines = [`${mark} ${label}`];
+	if (!check?.ok && fix) lines.push(formatFixLines(fix, (line) => `${color.clay}${line}${color.reset}`));
+	return lines.join('\n');
+}
+
+export function formatChecks(checks, { plain = isPlain() } = {}) {
+	return (Array.isArray(checks) ? checks : []).map((check) => formatCheckLine(check, { plain })).join('\n');
+}
+
+export function formatTips({ plain = isPlain() } = {}) {
+	if (plain) return SETUP_TIPS.join('\n');
+	return SETUP_TIPS.map((tip) => `${color.hint}${tip}${color.reset}`).join('\n');
+}
+
 /** Unknown-command hint: dim gray sentence, suggested command in clay. */
 export function formatTypoHint(command, suggestions = []) {
 	const cmd = String(command || '');
@@ -1059,7 +1122,8 @@ export function helpText() {
 				['copix', 'interactive REPL'],
 				['copix "prompt"', 'one-shot'],
 				['copix -p <dir> "prompt"', 'workspace'],
-				['copix doctor', 'environment check'],
+				['copix doctor', 'rerun the setup checks'],
+				['copix setup', 'run first-run setup again'],
 			]),
 			'',
 			`${color.bold}Model${color.reset}`,
@@ -1084,7 +1148,7 @@ export function helpText() {
 			...alignRows([
 				['/cwd [path]', 'show or change workspace (saved)'],
 				['/status', 'ollama, model, workspace, paths'],
-				['/doctor', 'Node, Ollama, models, paths'],
+				['/doctor', 'rerun the setup checks'],
 			]),
 			'',
 			`${color.bold}Display${color.reset}`,

@@ -25,7 +25,7 @@ export const SLASH_COMMANDS = [
 	{ cmd: '/pull', args: '<tag>', desc: 'Download an Ollama model (ollama pull)' },
 	{ cmd: '/cwd', args: '[path]', desc: 'Show or change the workspace directory' },
 	{ cmd: '/status', args: '', desc: 'Ollama status, model, workspace, version' },
-	{ cmd: '/doctor', args: '', desc: 'Check Node, Ollama, models, and install paths' },
+	{ cmd: '/doctor', args: '', desc: 'Rerun the setup checks' },
 	{ cmd: '/context', args: '', desc: 'Turns and estimated tokens in this chat' },
 	{ cmd: '/copy', args: '', desc: 'Copy the last reply' },
 	{ cmd: '/undo', args: '', desc: 'Restore the last file edit' },

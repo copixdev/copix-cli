@@ -3,6 +3,7 @@
  * Shared by the CLI so runAgent + tools match Copix Desktop.
  */
 import { spawn } from 'node:child_process';
+import { saveOpenRouterKey } from './keychain.js';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
@@ -10,6 +11,51 @@ import path from 'node:path';
 
 const COPIX_DIR = path.join(os.homedir(), 'Copix');
 const SETTINGS_PATH = path.join(COPIX_DIR, 'settings.json');
+
+/**
+ * Move a plaintext OpenRouter key out of settings.json and into the keychain.
+ * The file is cleared only after a confirmed keychain write. On failure the
+ * plaintext copy stays, and the key is returned for the current process.
+ */
+export async function migratePlaintextKey(settingsPath, saveKey = saveOpenRouterKey) {
+	let raw;
+	try {
+		raw = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+	} catch {
+		return { key: '', notice: '', stored: false };
+	}
+	const fileKey = String(raw?.model?.apiKey || '').trim();
+	if (!fileKey) return { key: '', notice: '', stored: false };
+	let notice = '';
+	let stored = false;
+	try {
+		const saved = await saveKey(fileKey);
+		stored = Boolean(saved?.ok && saved?.stored);
+		if (!stored && saved?.message) notice = saved.message;
+	} catch {
+		stored = false;
+	}
+	if (!stored) return { key: fileKey, notice, stored: false };
+	raw.model.apiKey = '';
+	await fs.writeFile(settingsPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+	return { key: fileKey, notice, stored: true };
+}
+
+/**
+ * Settings object about to be written. A blank apiKey does not erase a
+ * plaintext key that the keychain has not accepted yet. `keyStored` clears it.
+ */
+export function mergeSettingsForDisk(previous, next) {
+	const stored = JSON.parse(JSON.stringify(next ?? {}));
+	delete stored.keyNotice;
+	const keyStored = Boolean(stored.keyStored);
+	delete stored.keyStored;
+	const existingKey = String(previous?.model?.apiKey || '').trim();
+	if (stored.model && typeof stored.model === 'object') {
+		stored.model.apiKey = keyStored ? '' : existingKey;
+	}
+	return stored;
+}
 
 /** Users-directory prefix for a mistaken `/user/...` path. macOS and Windows differ; Linux does too. */
 export function usersDirectoryPrefix(platform = process.platform) {
@@ -378,29 +424,42 @@ export function createNodeCopixApi() {
 				return structuredClone(DEFAULT_SETTINGS);
 			}
 			try {
+				const migrated = await migratePlaintextKey(SETTINGS_PATH);
 				const raw = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
+				const requested = raw.model?.provider;
+				const provider = requested === 'openrouter' ? 'openrouter' : 'ollama';
 				const mergedModel = {
 					...DEFAULT_SETTINGS.model,
 					...(raw.model || {}),
-					provider: 'ollama',
+					provider,
+					apiKey: migrated.key,
 				};
-				// Drop leftover cloud model ids (e.g. Groq) so CLI/Desktop stay on Ollama.
+				// Drop leftover cloud model ids when staying on Ollama. OpenRouter ids are kept.
 				const id = String(mergedModel.modelId || '');
-				if (!id || /llama-3|gpt-|claude|gemini|mixtral|groq/i.test(id) || id.includes('/')) {
+				if (provider !== 'openrouter' && (!id || /llama-3|gpt-|claude|gemini|mixtral|groq/i.test(id) || id.includes('/'))) {
 					mergedModel.modelId = DEFAULT_SETTINGS.model.modelId;
 				}
-				return {
+				const settings = {
 					...DEFAULT_SETTINGS,
 					...raw,
 					model: mergedModel,
 				};
+				if (migrated.notice) settings.keyNotice = migrated.notice;
+				return settings;
 			} catch {
 				return structuredClone(DEFAULT_SETTINGS);
 			}
 		},
 		setSettings: async (settings) => {
 			await fs.mkdir(COPIX_DIR, { recursive: true });
-			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+			let previous = {};
+			try {
+				previous = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf8'));
+			} catch {
+				previous = {};
+			}
+			const stored = mergeSettingsForDisk(previous, settings);
+			await fs.writeFile(SETTINGS_PATH, `${JSON.stringify(stored, null, 2)}\n`, 'utf8');
 		},
 		loadChatSessions: async () => {
 			try {
@@ -426,7 +485,7 @@ export function createNodeCopixApi() {
 		openIdeWindow: async () => ({ ok: false, message: 'IDE window is desktop-only' }),
 		getServerStatus: async () => {
 			try {
-				const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(3000) });
+				const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
 				if (!res.ok) return { online: false, hasModel: false, models: [], provider: 'ollama' };
 				const data = await res.json();
 				const models = (data.models || []).map(m => m.name);

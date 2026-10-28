@@ -1,4 +1,6 @@
 export const OLLAMA_BASE_URL = 'http://127.0.0.1:11434/v1';
+/** Native Ollama chat. `/v1/chat/completions` ignores `options.num_ctx` and `keep_alive`. */
+export const OLLAMA_NATIVE_CHAT_URL = 'http://127.0.0.1:11434/api/chat';
 export {
 	FALLBACK_MODEL_ID as DEFAULT_MODEL_ID,
 	COPIX_MODEL_IDS,
@@ -17,6 +19,8 @@ import {
 import type { ModelProvider } from '../types.js';
 import { selectModelForTask } from './modelSelector.js';
 import type { ModelSettings } from '../types.js';
+import os from 'node:os';
+import { eightGbDefaults } from '../../src/ollamaProfile.js';
 
 export const DEFAULT_NUM_CTX = 16384;
 export const LOW_VRAM_NUM_CTX = 8192;
@@ -40,9 +44,13 @@ export interface ModelConfig {
 	numCtx?: number;
 	numPredict?: number;
 	numGpu?: number;
+	/** Ollama keep_alive. 8 GB machines use a short window so the model does not sit in RAM. */
+	keepAlive?: string;
+	/** When set, do not fall back to a second Ollama model in the same turn. */
+	singleModel?: boolean;
 }
 
-export function settingsToConfig(model: ModelSettings, modelId?: string): ModelConfig {
+export function settingsToConfig(model: ModelSettings, modelId?: string, totalMem: number = os.totalmem()): ModelConfig {
 	const provider = normalizeProvider(model.provider);
 	let resolved = modelId ?? (model.modelId || FALLBACK_MODEL_ID);
 	if (provider === 'groq') resolved = sanitizeGroqModelId(resolved);
@@ -79,13 +87,16 @@ export function settingsToConfig(model: ModelSettings, modelId?: string): ModelC
 	}
 
 	const lowVram = Boolean(model.lowVram);
+	const fitted = eightGbDefaults(totalMem);
 	return {
 		model: resolved,
 		baseUrl: OLLAMA_BASE_URL,
 		provider: 'ollama',
-		numCtx: lowVram ? LOW_VRAM_NUM_CTX : DEFAULT_NUM_CTX,
+		numCtx: fitted ? fitted.numCtx : (lowVram ? LOW_VRAM_NUM_CTX : DEFAULT_NUM_CTX),
 		numPredict: lowVram ? LOW_VRAM_NUM_PREDICT : DEFAULT_NUM_PREDICT,
 		numGpu: undefined,
+		keepAlive: fitted ? fitted.keepAlive : '30m',
+		singleModel: Boolean(fitted),
 	};
 }
 
@@ -94,17 +105,19 @@ export function resolveModelConfig(
 	agentMode: AgentMode,
 	installed: string[] = [],
 	userMessage?: string,
-	opts?: { hasImages?: boolean },
+	opts?: { hasImages?: boolean; totalMem?: number },
 ): ModelConfig {
-	let modelId = selectModelForTask(agentMode, model, installed, userMessage);
+	const totalMem = opts?.totalMem ?? os.totalmem();
+	let modelId = selectModelForTask(agentMode, model, installed, userMessage, totalMem);
 	const provider = normalizeProvider(model.provider);
 	if (opts?.hasImages && provider === 'groq') {
 		modelId = GROQ_VISION_MODEL;
 	}
-	return settingsToConfig(model, modelId);
+	return settingsToConfig(model, modelId, totalMem);
 }
 
 export function resolveChatUrl(config: ModelConfig): string {
+	if (config.provider === 'ollama') return OLLAMA_NATIVE_CHAT_URL;
 	return `${config.baseUrl}/chat/completions`;
 }
 
@@ -143,7 +156,10 @@ export async function checkModelHealth(config: ModelConfig): Promise<{ ok: boole
 	if (config.provider !== 'ollama') {
 		const label = config.provider === 'groq' ? 'Groq' : config.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
 		if (!config.apiKey) {
-			return { ok: false, message: `Add model.apiKey in ~/Copix/settings.json (${CLOUD_KEY_HINTS[config.provider]})` };
+			const hint = config.provider === 'openrouter'
+				? 'OpenRouter key: not set. Store it with copix setup, or set OPENROUTER_API_KEY.'
+				: `Add an API key (${CLOUD_KEY_HINTS[config.provider]})`;
+			return { ok: false, message: hint };
 		}
 		try {
 			const res = await fetch(`${config.baseUrl}/models`, {
@@ -151,9 +167,9 @@ export async function checkModelHealth(config: ModelConfig): Promise<{ ok: boole
 				signal: AbortSignal.timeout(5000),
 			});
 			if (res.ok) return { ok: true, message: `${label} · ${config.model} ready` };
-			return { ok: false, message: `${label} ${res.status} — check apiKey in settings.json` };
+			return { ok: false, message: `${label} ${res.status} — the API key was rejected` };
 		} catch {
-			return { ok: false, message: `Cannot reach ${label} — check network and apiKey` };
+			return { ok: false, message: `Cannot reach ${label} — check the network` };
 		}
 	}
 

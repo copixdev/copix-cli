@@ -20,6 +20,7 @@ import {
 import { webFetch, webSearch } from './webBrowse.js';
 import { computeLineDiff, truncateText } from '../utils/lineDiff.js';
 import { assertSafeFilePath } from '../utils/secrets.js';
+import { unloadOtherModels } from '../../src/ollamaProfile.js';
 import { emitAgentTerminal } from '../utils/terminalBridge.js';
 import { isMac, isWindows, projectPathExample, shellLabel } from '../utils/platform.js';
 
@@ -808,6 +809,83 @@ function augmentUserMessage(userMessage: string, priorMessages: Array<{ role: st
 [Continue the work from our previous conversation. Read what was already done in the chat history and workspace, then finish any remaining steps. Do not restart from scratch or repeat mkdir/setup already completed.]`;
 }
 
+function nativeOllamaMessages(messages: ChatMsg[]) {
+	return messages.map((msg) => {
+		const images: string[] = [];
+		let content = '';
+		if (typeof msg.content === 'string') content = msg.content;
+		else if (Array.isArray(msg.content)) {
+			const texts: string[] = [];
+			for (const part of msg.content) {
+				if (part.type === 'text') texts.push(part.text);
+				else if (part.type === 'image_url') {
+					const url = part.image_url?.url || '';
+					const comma = url.indexOf(',');
+					const b64 = url.startsWith('data:') && comma >= 0 ? url.slice(comma + 1) : url;
+					if (b64) images.push(b64);
+				}
+			}
+			content = texts.filter(Boolean).join('\n');
+		}
+		const out: Record<string, unknown> = { role: msg.role, content };
+		if (images.length) out.images = images;
+		if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
+		if (msg.tool_call_id) out.tool_call_id = msg.tool_call_id;
+		if (msg.name) out.name = msg.name;
+		return out;
+	});
+}
+
+function toolArgsText(raw: unknown): string {
+	if (raw == null) return '';
+	if (typeof raw === 'string') return raw;
+	try { return JSON.stringify(raw); } catch { return ''; }
+}
+
+/** Ollama options go to native `/api/chat`. Cloud providers stay on `/v1/chat/completions`. */
+export function buildChatRequest(
+	config: ModelConfig,
+	modelId: string,
+	messages: ChatMsg[],
+	tools: unknown[] | undefined,
+	maxTokens: number,
+): { url: string; body: Record<string, unknown> } {
+	if (config.provider === 'ollama') {
+		return {
+			url: resolveChatUrl(config),
+			body: {
+				model: modelId,
+				messages: nativeOllamaMessages(messages),
+				...(tools?.length ? { tools } : {}),
+				stream: true,
+				keep_alive: config.keepAlive || '30m',
+				options: {
+					num_ctx: config.numCtx ?? 16384,
+					num_predict: config.numPredict ?? maxTokens,
+					num_batch: 512,
+				},
+			},
+		};
+	}
+	return {
+		url: resolveChatUrl(config),
+		body: {
+			model: modelId,
+			messages,
+			...(tools?.length
+				? {
+					tools,
+					tool_choice: 'auto',
+					...(config.provider === 'groq' ? { parallel_tool_calls: false } : {}),
+				}
+				: {}),
+			stream: true,
+			temperature: 0.05,
+			max_tokens: maxTokens,
+		},
+	};
+}
+
 async function streamCompletion(
 	messages: ChatMsg[],
 	config: ModelConfig,
@@ -815,7 +893,6 @@ async function streamCompletion(
 	callbacks: AgentCallbacks,
 	opts: { tools?: typeof TOOLS; emitText?: boolean },
 ): Promise<{ assistantText: string; toolCalls: Map<number, { id: string; name: string; args: string }> }> {
-	const url = resolveChatUrl(config);
 	let thinking = true;
 	callbacks.onThinkingStart();
 	const endThinking = () => {
@@ -840,8 +917,12 @@ async function streamCompletion(
 			GROQ_FALLBACK_MODEL,
 		])]
 		: config.provider === 'ollama'
-			? [...new Set([config.model, FALLBACK_MODEL_ID])]
+			? (config.singleModel ? [config.model] : [...new Set([config.model, FALLBACK_MODEL_ID])])
 			: [config.model];
+
+	if (config.provider === 'ollama' && config.singleModel) {
+		await unloadOtherModels(config.model);
+	}
 
 	let maxTokens = config.provider === 'groq'
 		? Math.min(config.numPredict ?? GROQ_MAX_TOKENS, GROQ_MAX_TOKENS)
@@ -856,41 +937,14 @@ async function streamCompletion(
 		const modelId = modelCandidates[attempt]!;
 		const normalizedMessages = normalizeMessagesForModel(messages, modelId);
 		const tools = opts.tools?.length ? opts.tools : undefined;
-		const requestBody = isCloud
-			? {
-				model: modelId,
-				messages: normalizedMessages,
-				...(tools
-					? {
-						tools,
-						tool_choice: 'auto',
-						...(config.provider === 'groq' ? { parallel_tool_calls: false } : {}),
-					}
-					: {}),
-				stream: true,
-				temperature: 0.05,
-				max_tokens: maxTokens,
-			}
-			: {
-				model: modelId,
-				messages: normalizedMessages,
-				...(tools ? { tools } : {}),
-				stream: true,
-				temperature: 0.05,
-				options: {
-					...(config.numCtx != null ? { num_ctx: config.numCtx } : { num_ctx: 16384 }),
-					num_predict: config.numPredict ?? 16384,
-					num_batch: 512,
-					keep_alive: '30m',
-				},
-			};
+		const request = buildChatRequest(config, modelId, normalizedMessages, tools, maxTokens);
 
 		let res: Response;
 		try {
-			res = await fetch(url, {
+			res = await fetch(request.url, {
 				method: 'POST',
 				headers: buildModelHeaders(config),
-				body: JSON.stringify(requestBody),
+				body: JSON.stringify(request.body),
 				signal,
 			});
 		} catch (err) {
@@ -990,12 +1044,38 @@ async function streamCompletion(
 			buffer += decoder.decode(value, { stream: true });
 			const lines = buffer.split('\n');
 			buffer = lines.pop() ?? '';
+			const native = config.provider === 'ollama';
 			for (const line of lines) {
-				if (!line.startsWith('data: ')) continue;
-				const payload = line.slice(6).trim();
+				const trimmed = line.trim();
+				if (!trimmed) continue;
+				if (!native && !trimmed.startsWith('data: ')) continue;
+				const payload = native ? trimmed : trimmed.slice(6).trim();
 				if (payload === '[DONE]') continue;
 				try {
 					const json = JSON.parse(payload);
+					if (native) {
+						const msg = json.message ?? {};
+						const reasoning = msg.thinking ?? msg.reasoning;
+						if (reasoning) callbacks.onThinkingChunk(String(reasoning));
+						if (msg.content) {
+							endThinking();
+							assistantText += msg.content;
+							if (opts.emitText !== false) callbacks.onText(msg.content);
+						}
+						const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+						calls.forEach((tc: { index?: number; id?: string; function?: { name?: string; arguments?: unknown } }, i: number) => {
+							if (tc.function?.name) endThinking();
+							const idx = typeof tc.index === 'number' ? tc.index : i;
+							if (!toolCalls.has(idx)) toolCalls.set(idx, { id: tc.id ?? `c${idx}`, name: '', args: '' });
+							const entry = toolCalls.get(idx)!;
+							if (tc.function?.name) entry.name = tc.function.name;
+							const piece = toolArgsText(tc.function?.arguments);
+							if (!piece) return;
+							if (typeof tc.function?.arguments === 'string') entry.args += piece;
+							else entry.args = piece;
+						});
+						continue;
+					}
 					const delta = json.choices?.[0]?.delta;
 					const reasoning = delta?.reasoning_content ?? delta?.reasoning;
 					if (reasoning) {
